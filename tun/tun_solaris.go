@@ -57,6 +57,8 @@ const (
 	IF_UNITSEL = 0x80047336 /* set unit number */
 
 	SIOCSLIFMUXID = 0x80786984
+	SIOCGLIFMUXID = 0xc0786983
+	SIOCGLIFINDEX = 0xc0786985
 )
 
 func sysvicall6(trap, nargs, a1, a2, a3, a4, a5, a6 uintptr) (
@@ -156,25 +158,50 @@ func (tun *NativeTun) Events() chan TUNEvent {
 }
 
 func (tun *NativeTun) Close() error {
-	panic("not yet implemented")
+	if tun.ip_fd >= 0 {
+		ip_muxid, err := get_ip_muxid(tun.ip_fd, tun.name)
+		if err != nil {
+			return err
+		}
+
+		err = punlink(tun.ip_fd, ip_muxid)
+		if err != nil {
+			return err
+		}
+
+		unix.Close(tun.ip_fd)
+		tun.ip_fd = -1
+	}
+
+	if tun.tunFile != nil {
+		tun.tunFile.Close()
+		tun.tunFile = nil
+	}
+
+	if tun.events != nil {
+		close(tun.events)
+	}
+
 	return nil
 }
 
 func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
-	panic("CreateTUNFromFile: not yet implemeneted")
-	return nil, nil
+	/*
+	 * XXX It's not currently clear to me how to take a TUN file descriptor
+	 * and determine the attached PPA.
+	 *
+	 * XXX Based on the current architecture of the daemon, we need to be
+	 * able to reconstitute our NativeTun object from just a file
+	 * descriptor number as the fd number is passed (with no other
+	 * information) through the environment to the child.  For now, use the
+	 * "-f" flag.
+	 */
+	return nil, fmt.Errorf("CreateTUNFromFile() not currently supported")
 }
 
 func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	if name != "tun" {
 		return nil, fmt.Errorf("Interface name must be 'tun'")
-	}
-
-	tun := &NativeTun{
-		ip_fd: -1,
-		events: make(chan TUNEvent, 10),
-		errors: make(chan error, 1),
-		mtu: 1468,
 	}
 
 	/*
@@ -197,12 +224,12 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	 * "unix.OpenFile()" so that we get the os.File object here.  The rest
 	 * of the Wireguard API seems to depend on that functionality.
 	 */
-	tun.tunFile, err = os.OpenFile(dev_node, unix.O_RDWR, 0)
+	tunFile, err := os.OpenFile(dev_node, unix.O_RDWR, 0)
 	if err != nil {
-		unix.Close(tun.ip_fd)
+		unix.Close(ip_fd)
 		return nil, fmt.Errorf("Could not open TUN (%s)", dev_node)
 	}
-	fd := int(tun.tunFile.Fd())
+	fd := int(tunFile.Fd())
 
 	/*
 	 * Ask the TUN driver for a new PPA number:
@@ -210,12 +237,12 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	ppa, err := tun_new_ppa(fd)
 	if err != nil {
 		unix.Close(ip_fd)
-		tun.tunFile.Close()
+		tunFile.Close()
 		return nil, err
 	}
 
-	tun.name = fmt.Sprintf("tun%d", ppa)
-	fmt.Printf("device %v\n", tun.name)
+	name = fmt.Sprintf("tun%d", ppa)
+	fmt.Printf("device %v\n", name)
 
 	/*
 	 * Open another temporary file descriptor to the TUN driver.
@@ -225,7 +252,7 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	if_fd, err := unix.Open(dev_node, unix.O_RDWR, 0)
 	if err != nil {
 		unix.Close(ip_fd)
-		tun.tunFile.Close()
+		tunFile.Close()
 		return nil, fmt.Errorf("Could not open second TUN (%s)",
 		    dev_node)
 	}
@@ -236,14 +263,14 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	if err = push_ip(if_fd); err != nil {
 		unix.Close(if_fd)
 		unix.Close(ip_fd)
-		tun.tunFile.Close()
+		tunFile.Close()
 		return nil, err
 	}
 
 	if err = unit_select(if_fd, ppa); err != nil {
 		unix.Close(if_fd)
 		unix.Close(ip_fd)
-		tun.tunFile.Close()
+		tunFile.Close()
 		return nil, err
 	}
 
@@ -251,21 +278,36 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	if err != nil {
 		unix.Close(if_fd)
 		unix.Close(ip_fd)
-		tun.tunFile.Close()
+		tunFile.Close()
 		return nil, err
 	}
 
-	if err = set_ip_muxid(ip_fd, tun.name, ip_muxid); err != nil {
+	/*
+	 * XXX It would seem that we can now close this file descriptor,
+	 * because of the persistent link established above.
+	 */
+	unix.Close(if_fd)
+	if_fd = -1
+
+	if err = set_ip_muxid(ip_fd, name, ip_muxid); err != nil {
 		/*
 		 * Attempt to disconnect the IP multiplexor before we close
 		 * everything down.
 		 */
 		punlink(ip_fd, ip_muxid)
 
-		unix.Close(if_fd)
 		unix.Close(ip_fd)
-		tun.tunFile.Close()
+		tunFile.Close()
 		return nil, err
+	}
+
+	tun := &NativeTun{
+		events: make(chan TUNEvent, 10),
+		errors: make(chan error, 1),
+		mtu: mtu, /* XXX We should do something with the MTU! */
+		name: name,
+		tunFile: tunFile,
+		ip_fd: ip_fd,
 	}
 
 	defer func () {
@@ -278,6 +320,34 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	return tun, nil
 }
 
+func get_ip_muxid(fd int, name string) (int, error) {
+	// struct lifreq { /* 0x178 bytes */
+	//         char lifr_name[32]; /* offset: 0 bytes */
+	//         union  lifr_lifru1; /* offset: 32 bytes */
+	//         uint_t lifr_type; /* offset: 36 bytes */
+	//         union  lifr_lifru; /* offset: 40 bytes */
+	//                 - int lif_muxid[2];           /* mux id's for arp and ip */
+	// };
+	// #define lifr_ip_muxid   lifr_lifru.lif_muxid[0]
+	ifr := make([]byte, 0x178)
+	anb := []byte(name)
+	for i := 0; i < len(anb); i++ {
+		ifr[i] = anb[i]
+	}
+
+	_, err := ioctl(fd, SIOCGLIFMUXID, uintptr(unsafe.Pointer(&ifr[0])))
+	if err != nil {
+		return -1, fmt.Errorf("could not SIOCSLIFMUXID: %v", err)
+	}
+
+	/* ip_muxid = ifr.lifr_ip_muxid */
+	var ip_muxid int = int(*(*int32)(unsafe.Pointer(&ifr[40 + 4 * 0])))
+
+	fmt.Printf("got ip_muxid %v\n", ip_muxid)
+
+	return ip_muxid, nil
+}
+
 func set_ip_muxid(fd int, name string, ip_muxid int) (error) {
 	// struct lifreq { /* 0x178 bytes */
 	//         char lifr_name[32]; /* offset: 0 bytes */
@@ -285,7 +355,6 @@ func set_ip_muxid(fd int, name string, ip_muxid int) (error) {
 	//         uint_t lifr_type; /* offset: 36 bytes */
 	//         union  lifr_lifru; /* offset: 40 bytes */
 	//                 - int lif_muxid[2];           /* mux id's for arp and ip */
-
 	// };
 	// #define lifr_ip_muxid   lifr_lifru.lif_muxid[0]
 	ifr := make([]byte, 0x178)
@@ -358,33 +427,42 @@ func push_ip(fd int) (error) {
  * allocated PPA number.
  */
 func tun_new_ppa(fd int) (int, error) {
-	/*
-	 * The data pointer (ic_dp) for a TUNNEWPPA request must point to an
-	 * int32_t value.  This value will be read to determine whether we want
-	 * to allocate a specific PPA number, or if we want a dynamically
-	 * assigned PPA number by passing -1.  If successful, the ioctl will
-	 * return the allocated PPA number.
-	 */
-	int_ppa := make([]byte, 4) /* storage for the PPA number */
-	*(*int32)(unsafe.Pointer(&int_ppa[0])) = -1
+	for try_ppa := 0; try_ppa < 128; try_ppa++ {
+		/*
+		 * The data pointer (ic_dp) for a TUNNEWPPA request must point to an
+		 * int32_t value.  This value will be read to determine whether we want
+		 * to allocate a specific PPA number, or if we want a dynamically
+		 * assigned PPA number by passing -1.  If successful, the ioctl will
+		 * return the allocated PPA number.
+		 */
+		int_ppa := make([]byte, 4) /* storage for the PPA number */
+		*(*int32)(unsafe.Pointer(&int_ppa[0])) = int32(try_ppa)
 
-	/*
-	 * Construct a "struct strioctl" for use with the I_STR request
-	 * we will make to the "tun" device.
-	 */
-	strioc := make([]byte, 0x18) /* struct strioctl */
-	*(*int32)(unsafe.Pointer(&strioc[0])) = TUNNEWPPA /* int ic_cmd */
-	*(*int32)(unsafe.Pointer(&strioc[4])) = 0 /* int ic_timout */
-	*(*int32)(unsafe.Pointer(&strioc[8])) = 4 /* int ic_len */
-	*(*uintptr)(unsafe.Pointer(&strioc[16])) = /* int ic_dp */
-	    uintptr(unsafe.Pointer(&int_ppa[0]))
+		/*
+		 * Construct a "struct strioctl" for use with the I_STR request
+		 * we will make to the "tun" device.
+		 */
+		strioc := make([]byte, 0x18) /* struct strioctl */
+		*(*int32)(unsafe.Pointer(&strioc[0])) = TUNNEWPPA /* int ic_cmd */
+		*(*int32)(unsafe.Pointer(&strioc[4])) = 0 /* int ic_timout */
+		*(*int32)(unsafe.Pointer(&strioc[8])) = 4 /* int ic_len */
+		*(*uintptr)(unsafe.Pointer(&strioc[16])) = /* int ic_dp */
+		    uintptr(unsafe.Pointer(&int_ppa[0]))
 
-	new_ppa, err := ioctl(fd, I_STR, uintptr(unsafe.Pointer(&strioc[0])))
-	if err != nil {
-		return -1, fmt.Errorf("PPA allocation failure: %v", err)
+		new_ppa, err := ioctl(fd, I_STR, uintptr(unsafe.Pointer(&strioc[0])))
+		if err == unix.EEXIST {
+			/*
+			 * This PPA appears to be in use; try the next one.
+			 */
+			continue
+		} else if err != nil {
+			return -1, fmt.Errorf("PPA allocation failure: %v", err)
+		}
+
+		return new_ppa, nil
 	}
 
-	return new_ppa, nil
+	return -1, fmt.Errorf("PPA allocation failure: all PPAs are busy")
 }
 
 /*
@@ -434,13 +512,3 @@ func (tun *NativeTun) write_tun(buf []byte) (int, error) {
 
 	return len(buf), nil
 }
-
-
-/*	cmd := exec.Command("/sbin/ifconfig", actual_name, "100.64.64.2",
-	    "100.64.64.1", "mtu", "1450", "netmask", "255.255.255.255",
-	    "up")
-	err = cmd.Run()
-	if err != nil {
-		fmt.Printf("could not ifconfig: %v\n", err);
-		os.Exit(2)
-	}*/
