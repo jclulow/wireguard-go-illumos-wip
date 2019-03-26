@@ -3,6 +3,7 @@
 /* SPDX-License-Identifier: MIT
  *
  * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright 2019 Joyent, Inc.
  */
 
 package ipc
@@ -93,7 +94,7 @@ func UAPIOpen(name string) (*os.File, error) {
 
 	// check if path exist
 
-	err := os.MkdirAll(socketDirectory, 0755)
+	err := os.MkdirAll(socketDirectory, 0700)
 	if err != nil && !os.IsExist(err) {
 		return nil, err
 	}

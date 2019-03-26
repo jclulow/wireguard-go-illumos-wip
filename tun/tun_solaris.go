@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * Copyright 2019 Joyent, Inc.
+ */
 // +build solaris,amd64
 
 package tun
@@ -70,7 +74,7 @@ func ioctl(fd int, req uint, arg uintptr) (r int, err error) {
 	return
 }
 
-func putmsg(fd int, ctlptr uintptr, dataptr uintptr, int flags) (
+func putmsg(fd int, ctlptr uintptr, dataptr uintptr, flags int) (
     r int, err error) {
 	r0, _, e0 := sysvicall6(uintptr(unsafe.Pointer(&f_putmsg)), 4,
 	    uintptr(fd), ctlptr, dataptr, uintptr(flags), 0, 0)
@@ -83,7 +87,7 @@ func putmsg(fd int, ctlptr uintptr, dataptr uintptr, int flags) (
 	return
 }
 
-func getmsg(fd int, ctlptr uintptr, dataptr uintptr, uintptr flagsp) (
+func getmsg(fd int, ctlptr uintptr, dataptr uintptr, flagsp uintptr) (
     r int, err error) {
 	r0, _, e0 := sysvicall6(uintptr(unsafe.Pointer(&f_getmsg)), 4,
 	    uintptr(fd), ctlptr, dataptr, flagsp, 0, 0)
@@ -105,6 +109,10 @@ type NativeTun struct {
 	tunFile *os.File	/* TUN device file */
 	ip_fd int		/* IP device fd */
 	name string		/* Interface name */
+	mtu int
+
+	events chan TUNEvent
+	errors chan error
 }
 
 // type TUNDevice interface {
@@ -117,18 +125,44 @@ type NativeTun struct {
 // 	Close() error                   // stops the device and closes the event channel
 // }
 
+func (tun *NativeTun) Name() (string, error) {
+	return tun.name, nil
+}
+
+func (tun *NativeTun) Read(buf []byte, offset int) (int, error) {
+	select {
+	case err := <-tun.errors:
+		return 0, err
+
+	default:
+		return tun.read_tun(buf[offset:])
+	}
+}
+
+func (tun *NativeTun) Write(buf []byte, offset int) (int, error) {
+	return tun.write_tun(buf[offset:])
+}
+
 func (tun *NativeTun) File() *os.File {
 	return tun.tunFile
 }
 
+func (tun *NativeTun) MTU() (int, error) {
+	return tun.mtu, nil
+}
+
 func (tun *NativeTun) Events() chan TUNEvent {
-	panic("not yet implemented")
-	return nil
+	return tun.events
 }
 
 func (tun *NativeTun) Close() error {
 	panic("not yet implemented")
 	return nil
+}
+
+func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
+	panic("CreateTUNFromFile: not yet implemeneted")
+	return nil, nil
 }
 
 func CreateTUN(name string, mtu int) (TUNDevice, error) {
@@ -138,6 +172,9 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 
 	tun := &NativeTun{
 		ip_fd: -1,
+		events: make(chan TUNEvent, 10),
+		errors: make(chan error, 1),
+		mtu: 1468,
 	}
 
 	/*
@@ -178,6 +215,7 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	}
 
 	tun.name = fmt.Sprintf("tun%d", ppa)
+	fmt.Printf("device %v\n", tun.name)
 
 	/*
 	 * Open another temporary file descriptor to the TUN driver.
@@ -217,7 +255,7 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 		return nil, err
 	}
 
-	if err = set_ip_muxid(ip_fd, name, ip_muxid); err != nil {
+	if err = set_ip_muxid(ip_fd, tun.name, ip_muxid); err != nil {
 		/*
 		 * Attempt to disconnect the IP multiplexor before we close
 		 * everything down.
@@ -229,6 +267,13 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 		tun.tunFile.Close()
 		return nil, err
 	}
+
+	defer func () {
+		/*
+		 * XXX For now, we'll just send a link up event straight away.
+		 */
+		tun.events <- TUNEventUp
+	}()
 
 	return tun, nil
 }
@@ -342,24 +387,52 @@ func tun_new_ppa(fd int) (int, error) {
 	return new_ppa, nil
 }
 
-func (tun *NativeTun) write_tun(buf *[]bytes) (error) {
+/*
+ * Read bytes from the TUN device into this slice, and return the number of
+ * bytes we read.
+ */
+func (tun *NativeTun) read_tun(buf []byte) (int, error) {
 	// struct strbuf { /* 0x10 bytes */
 	//         int maxlen; /* offset: 0 bytes */
 	//         int len; /* offset: 4 bytes */
 	//         caddr_t buf; /* offset: 8 bytes */
 	// };
 	sbuf := make([]byte, 0x10) /* struct strbuf */
-	*(*int32)(unsafe.Pointer(&sbuf[4])) = len(buf) /* int len */
+	*(*int32)(unsafe.Pointer(&sbuf[0])) = int32(len(buf)) /* int maxlen */
+	*(*uintptr)(unsafe.Pointer(&sbuf[8])) = /* caddr_t buf */
+	    uintptr(unsafe.Pointer(&buf[0]))
+
+	var flags int32 = 0
+
+	_, err := getmsg(int(tun.tunFile.Fd()), uintptr(0),
+	    uintptr(unsafe.Pointer(&sbuf[0])),
+	    uintptr(unsafe.Pointer(&flags)))
+	if err != nil {
+		return -1, fmt.Errorf("TUN read failure: %v", err)
+	}
+
+	return int(*(*int32)(unsafe.Pointer(&sbuf[4]))), /* int len */
+	    nil
+}
+
+func (tun *NativeTun) write_tun(buf []byte) (int, error) {
+	// struct strbuf { /* 0x10 bytes */
+	//         int maxlen; /* offset: 0 bytes */
+	//         int len; /* offset: 4 bytes */
+	//         caddr_t buf; /* offset: 8 bytes */
+	// };
+	sbuf := make([]byte, 0x10) /* struct strbuf */
+	*(*int32)(unsafe.Pointer(&sbuf[4])) = int32(len(buf)) /* int len */
 	*(*uintptr)(unsafe.Pointer(&sbuf[8])) = /* caddr_t buf */
 	    uintptr(unsafe.Pointer(&buf[0]))
 
 	_, err := putmsg(int(tun.tunFile.Fd()), uintptr(0),
 	    uintptr(unsafe.Pointer(&sbuf[0])), 0)
 	if err != nil {
-		return fmt.Errorf("TUN write failure: %v", err)
+		return -1, fmt.Errorf("TUN write failure: %v", err)
 	}
 
-	return nil
+	return len(buf), nil
 }
 
 
