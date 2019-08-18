@@ -1,5 +1,7 @@
 # illumos port of wireguard-go
 
+[Useful link for learning who to use WireGuard](https://emanuelduss.ch/2018/09/wireguard-vpn-road-warrior-setup/)
+
 This is a work-in-progress port of the Go version of
 [WireGuard](https://www.wireguard.com/).  Basic functionality has been verified
 on a current SmartOS system, which includes by default the necessary [TUN/TAP
