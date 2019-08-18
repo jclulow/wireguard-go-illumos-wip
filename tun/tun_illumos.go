@@ -113,17 +113,17 @@ type NativeTun struct {
 	name string		/* Interface name */
 	mtu int
 
-	events chan TUNEvent
+	events chan Event
 	errors chan error
 }
 
-// type TUNDevice interface {
+// type Device interface {
 // 	File() *os.File                 // returns the file descriptor of the device
 // 	Read([]byte, int) (int, error)  // read a packet from the device (without any additional headers)
 // 	Write([]byte, int) (int, error) // writes a packet to the device (without any additional headers)
 // 	MTU() (int, error)              // returns the MTU of the device
 // 	Name() (string, error)          // fetches and returns the current name
-// 	Events() chan TUNEvent          // returns a constant channel of events related to the device
+// 	Events() chan Event          // returns a constant channel of events related to the device
 // 	Close() error                   // stops the device and closes the event channel
 // }
 
@@ -153,8 +153,13 @@ func (tun *NativeTun) MTU() (int, error) {
 	return tun.mtu, nil
 }
 
-func (tun *NativeTun) Events() chan TUNEvent {
+func (tun *NativeTun) Events() chan Event {
 	return tun.events
+}
+
+func (tun *NativeTun) Flush() error {
+	// TODO: can flushing be implemented by buffering and using sendmmsg?
+	return nil
 }
 
 func (tun *NativeTun) Close() error {
@@ -185,7 +190,7 @@ func (tun *NativeTun) Close() error {
 	return nil
 }
 
-func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
+func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
 	/*
 	 * XXX It's not currently clear to me how to take a TUN file descriptor
 	 * and determine the attached PPA.
@@ -199,7 +204,7 @@ func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
 	return nil, fmt.Errorf("CreateTUNFromFile() not currently supported")
 }
 
-func CreateTUN(name string, mtu int) (TUNDevice, error) {
+func CreateTUN(name string, mtu int) (Device, error) {
 	if name != "tun" {
 		return nil, fmt.Errorf("Interface name must be 'tun'")
 	}
@@ -302,7 +307,7 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	}
 
 	tun := &NativeTun{
-		events: make(chan TUNEvent, 10),
+		events: make(chan Event, 10),
 		errors: make(chan error, 1),
 		mtu: mtu, /* XXX We should do something with the MTU! */
 		name: name,
@@ -314,7 +319,7 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 		/*
 		 * XXX For now, we'll just send a link up event straight away.
 		 */
-		tun.events <- TUNEventUp
+		tun.events <- EventUp
 	}()
 
 	return tun, nil
