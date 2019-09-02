@@ -38,6 +38,11 @@ First, and this is triton specific, we need to create a dedicated `vpn` network.
 
 See this screenshot for an example vpn network config. Note that no default gateway is set, we use a **route** for NATing, so `adminui0` can check for new images on (images.joyent.com).
 
+| Instance | IP on `vpn` network |
+|:--------|:-------------------:|
+| vpn        | 10.0.0.2          |
+| adminui0   | 10.0.0.30         |
+
 ![](vpn-network.png)
 
 
