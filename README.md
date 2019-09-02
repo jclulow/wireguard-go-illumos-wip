@@ -6,14 +6,22 @@
 
 #### Quick start
 - Connect to the VPN instance
+
 `ssh root@85.88.23.16 -p 2020`
+
 - Start a `screen` session and start the WireGuard go server, then leave it open by disconnecting from the `screen` session
-`$ screen`
+
+`screen`
+
 `/opt/src/wg-start.sh`
+
 - Disconnect from the `screen` session with `Ctrl + A`, then `D`. Workaround to leave the process running in the background.
 - Run the setup script.
+
 `/opt/src/wg-setup.sh`
+
 - Verify everything is running fine
+
 `/opt/src/WireGuard-0.0.20190702/src/tools/wg`
 
 
