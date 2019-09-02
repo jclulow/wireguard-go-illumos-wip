@@ -33,6 +33,14 @@ screen
 
 #### Overview
 This is the wireguard config we use currently:
+
+First, and this is triton specific, we need to create a dedicated `vpn` network. This allows us to let CNS generate DNS entries for instances on the `admin` network, e.g. `adminui0`. We use this with [triton-dehydrated](https://github.com/joyent/triton-dehydrated/) for Let's Encrypt SSL certs. Set  up a dedicated NIC, and set the nictags on the corresponding interfaces on each server. 
+
+See this screenshot for an example vpn network config. Note that no default gateway is set, we use a **route** for NATing, so `adminui0` can check for new images on (images.joyent.com).
+
+![](https://git.greenbaum.cloud/greenbaum.cloud/wireguard-go-illumos/src/branch/fork-wip/vpn-network.png)
+
+
 View the WireGuard config `tun0.conf`, `ipnat.conf`, `wg-start.sh` start script and `wg-setup.sh` script to understand what's going on.
 
 `$ cat /opt/src/WireGuard-0.0.20190702/src/tools/tun0.conf`
@@ -88,7 +96,6 @@ route add 5.0.0.0/24 5.0.0.1
 echo "setting wireguard conf"
 /opt/src/WireGuard-0.0.20190702/src/tools/wg setconf tun0 /opt/src/WireGuard-0.0.20190702/src/tools/tun0.conf
 ```
-
 
 ### Original readme
 
