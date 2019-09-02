@@ -33,7 +33,7 @@ screen
 
 #### Overview
 This is the wireguard config we use currently:
-View the WireGuard config `tun0.conf`, `wg-start.sh` start script and `wg-setup.sh` script to understand what's going on.
+View the WireGuard config `tun0.conf`, `ipnat.conf`, `wg-start.sh` start script and `wg-setup.sh` script to understand what's going on.
 
 `$ cat /opt/src/WireGuard-0.0.20190702/src/tools/tun0.conf`
 ```
@@ -55,6 +55,17 @@ View the WireGuard config `tun0.conf`, `wg-start.sh` start script and `wg-setup.
    # client3 / MBP 2018 Mike
    PublicKey = 8cGnCdYJZKXQ+o/cBZjRlyhYKTeoSzRebTgY1saBkF0=
    AllowedIPs = 5.0.0.4/32, 10.0.0.0/24, 10.88.88.0/24
+```
+
+
+`$ cat /etc/ipf/ipnat.conf`
+```
+# VPN mapping
+map * from 5.0.0.0/24 to any -> 0.0.0.0/32
+
+# NAT mapping
+map net0 10.0.0.0/24 -> 0/32 portmap tcp/udp 1025:65535
+map net0 10.0.0.0/24 -> 0/32
 ```
 
 
