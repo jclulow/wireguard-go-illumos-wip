@@ -38,7 +38,7 @@ First, and this is triton specific, we need to create a dedicated `vpn` network.
 
 See this screenshot for an example vpn network config. Note that no default gateway is set, we use a **route** for NATing, so `adminui0` can check for new images on (images.joyent.com).
 
-![](https://git.greenbaum.cloud/greenbaum.cloud/wireguard-go-illumos/src/branch/fork-wip/vpn-network.png)
+![](vpn-network.png)
 
 
 View the WireGuard config `tun0.conf`, `ipnat.conf`, `wg-start.sh` start script and `wg-setup.sh` script to understand what's going on.
