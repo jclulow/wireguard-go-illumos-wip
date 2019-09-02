@@ -2,6 +2,70 @@
 
 [Useful link for learning who to use WireGuard](https://emanuelduss.ch/2018/09/wireguard-vpn-road-warrior-setup/)
 
+## GREENBAUM Docs
+
+#### Quick start
+- Connect to the VPN instance
+`ssh root@85.88.23.16 -p 2020`
+- Start a `screen` session and start the WireGuard go server, then leave it open by disconnecting from the `screen` session
+`$ screen`
+`/opt/src/wg-start.sh`
+- Disconnect from the `screen` session with `Ctrl + A`, then `D`. Workaround to leave the process running in the background.
+- Run the setup script.
+`/opt/src/wg-setup.sh`
+- Verify everything is running fine
+`/opt/src/WireGuard-0.0.20190702/src/tools/wg`
+
+
+#### Overview
+This is the wireguard config we use currently:
+View the WireGuard config `tun0.conf`, `wg-start.sh` start script and `wg-setup.sh` script to understand what's going on.
+`$ cat /opt/src/WireGuard-0.0.20190702/src/tools/tun0.conf`
+```
+[Interface]
+   ListenPort = 51820
+   PrivateKey = XXXX
+
+[Peer]
+   # client1 / MBP 2015 Jhonas
+   PublicKey = hNvlmlGuLmVp2xSjLW4zLrO1riUTADif5GKunrDZ12I=
+   AllowedIPs = 5.0.0.2/32, 10.0.0.0/24, 10.88.88.0/24
+
+[Peer]
+   # client2 / iPhone 6 Jhonas
+   PublicKey = UIpr0665cvhR2BxsO8nQCwlcfETtHj3Jai1RVSaZjFg=
+   AllowedIPs = 5.0.0.3/32, 10.0.0.0/24, 10.88.88.0/24
+
+[Peer]
+   # client3 / MBP 2018 Mike
+   PublicKey = 8cGnCdYJZKXQ+o/cBZjRlyhYKTeoSzRebTgY1saBkF0=
+   AllowedIPs = 5.0.0.4/32, 10.0.0.0/24, 10.88.88.0/24
+```
+
+
+`$ cat /opt/src/wg-start.sh`
+```
+#!/opt/local/bin/bash
+/opt/src/wireguard-go-illumos-wip/wireguard-go -f tun
+```
+
+
+`$ cat /opt/src/wg-setup.sh`
+```
+#!/opt/local/bin/bash
+echo "resetting ipfilter"
+svcadm clear ipfilter && svcadm enable ipfilter
+echo "setting up interface tun0"
+ifconfig tun0 5.0.0.16 5.0.0.1 netmask 255.255.255.255 mtu 1420 up
+echo "adding route"
+route add 5.0.0.0/24 5.0.0.1
+echo "setting wireguard conf"
+/opt/src/WireGuard-0.0.20190702/src/tools/wg setconf tun0 /opt/src/WireGuard-0.0.20190702/src/tools/tun0.conf
+```
+
+
+### Original readme
+
 This is a work-in-progress port of the Go version of
 [WireGuard](https://www.wireguard.com/).  Basic functionality has been verified
 on a current SmartOS system, which includes by default the necessary [TUN/TAP
