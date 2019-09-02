@@ -1,6 +1,6 @@
 # illumos port of wireguard-go
 
-[Useful link for learning who to use WireGuard](https://emanuelduss.ch/2018/09/wireguard-vpn-road-warrior-setup/)
+[Useful link for learning how to use WireGuard](https://emanuelduss.ch/2018/09/wireguard-vpn-road-warrior-setup/)
 
 ## GREENBAUM Docs
 
