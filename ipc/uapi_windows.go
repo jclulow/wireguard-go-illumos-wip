@@ -8,6 +8,8 @@ package ipc
 import (
 	"net"
 
+	"golang.org/x/sys/windows"
+
 	"golang.zx2c4.com/wireguard/ipc/winpipe"
 )
 
@@ -47,14 +49,22 @@ func (l *UAPIListener) Addr() net.Addr {
 	return l.listener.Addr()
 }
 
-/* SDDL_DEVOBJ_SYS_ALL from the WDK */
-var UAPISecurityDescriptor = "O:SYD:P(A;;GA;;;SY)"
+var UAPISecurityDescriptor *windows.SECURITY_DESCRIPTOR
+
+func init() {
+	var err error
+	/* SDDL_DEVOBJ_SYS_ALL from the WDK */
+	UAPISecurityDescriptor, err = windows.SecurityDescriptorFromString("O:SYD:P(A;;GA;;;SY)")
+	if err != nil {
+		panic(err)
+	}
+}
 
 func UAPIListen(name string) (net.Listener, error) {
 	config := winpipe.PipeConfig{
 		SecurityDescriptor: UAPISecurityDescriptor,
 	}
-	listener, err := winpipe.ListenPipe("\\\\.\\pipe\\WireGuard\\"+name, &config)
+	listener, err := winpipe.ListenPipe(`\\.\pipe\ProtectedPrefix\Administrators\WireGuard\`+name, &config)
 	if err != nil {
 		return nil, err
 	}
