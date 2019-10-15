@@ -31,6 +31,13 @@ type rateJuggler struct {
 	changing      int32
 }
 
+type rateJuggler struct {
+	changing      int32
+	current       uint64
+	nextByteCount uint64
+	nextStartTime int64
+}
+
 type NativeTun struct {
 	wt        *wintun.Interface
 	handle    windows.Handle
@@ -242,6 +249,26 @@ func (tun *NativeTun) Write(buff []byte, offset int) (int, error) {
 // LUID returns Windows interface instance ID.
 func (tun *NativeTun) LUID() uint64 {
 	return tun.wt.LUID()
+}
+
+// Version returns the version of the Wintun driver and NDIS system currently loaded.
+func (tun *NativeTun) Version() (driverVersion string, ndisVersion string, err error) {
+	return tun.wt.Version()
+}
+
+func (rate *rateJuggler) update(packetLen uint64) {
+	now := nanotime()
+	total := atomic.AddUint64(&rate.nextByteCount, packetLen)
+	period := uint64(now - atomic.LoadInt64(&rate.nextStartTime))
+	if period >= rateMeasurementGranularity {
+		if !atomic.CompareAndSwapInt32(&rate.changing, 0, 1) {
+			return
+		}
+		atomic.StoreInt64(&rate.nextStartTime, now)
+		atomic.StoreUint64(&rate.current, total*uint64(time.Second/time.Nanosecond)/period)
+		atomic.StoreUint64(&rate.nextByteCount, 0)
+		atomic.StoreInt32(&rate.changing, 0)
+	}
 }
 
 func (rate *rateJuggler) update(packetLen uint64) {
