@@ -90,8 +90,6 @@ The rest of the README is from the upstream repository:
 
 This is an implementation of WireGuard in Go.
 
-***WARNING:*** This is a work in progress and not ready for prime time, with no official "releases" yet. It is extremely rough around the edges and leaves much to be desired. There are bugs and we are not yet in a position to make claims about its security. Beware.
-
 ## Usage
 
 Most Linux kernel WireGuard users are used to adding an interface with `ip link add wg0 type wireguard`. With wireguard-go, instead simply run:
@@ -124,7 +122,7 @@ This runs on macOS using the utun driver. It does not yet support sticky sockets
 
 ### Windows
 
-It is currently a work in progress to strip out the beginnings of an experiment done with the OpenVPN tuntap driver and instead port to the new UWP APIs for tunnels. In other words, this does not *yet* work on Windows.
+This runs on Windows, but you should instead use it from the more [fully featured Windows app](https://git.zx2c4.com/wireguard-windows/about/), which uses this as a module.
 
 ### FreeBSD
 

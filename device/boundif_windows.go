@@ -7,8 +7,10 @@ package device
 
 import (
 	"encoding/binary"
-	"golang.org/x/sys/windows"
+	"errors"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -21,6 +23,10 @@ func (device *Device) BindSocketToInterface4(interfaceIndex uint32) error {
 	bytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(bytes, interfaceIndex)
 	interfaceIndex = *(*uint32)(unsafe.Pointer(&bytes[0]))
+
+	if device.net.bind == nil {
+		return errors.New("Bind is not yet initialized")
+	}
 
 	sysconn, err := device.net.bind.(*nativeBind).ipv4.SyscallConn()
 	if err != nil {

@@ -9,19 +9,30 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"golang.org/x/net/ipv6"
-	"golang.org/x/sys/unix"
 	"net"
 	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
 // _TUNSIFHEAD, value derived from sys/net/{if_tun,ioccom}.h
 // const _TUNSIFHEAD = ((0x80000000) | (((4) & ((1 << 13) - 1) ) << 16) | (uint32(byte('t')) << 8) | (96))
-const _TUNSIFHEAD = 0x80047460
-const _TUNSIFMODE = 0x8004745e
-const _TUNSIFPID = 0x2000745f
+const (
+	_TUNSIFHEAD = 0x80047460
+	_TUNSIFMODE = 0x8004745e
+	_TUNSIFPID  = 0x2000745f
+)
+
+// TODO: move into x/sys/unix
+const (
+	SIOCGIFINFO_IN6        = 0xc048696c
+	SIOCSIFINFO_IN6        = 0xc048696d
+	ND6_IFF_AUTO_LINKLOCAL = 0x20
+	ND6_IFF_NO_DAD         = 0x100
+)
 
 // Iface status string max len
 const _IFSTATMAX = 800
@@ -32,7 +43,7 @@ const SIZEOF_UINTPTR = 4 << (^uintptr(0) >> 32 & 1)
 type ifreq_ptr struct {
 	Name [unix.IFNAMSIZ]byte
 	Data uintptr
-	Pad0 [24 - SIZEOF_UINTPTR]byte
+	Pad0 [16 - SIZEOF_UINTPTR]byte
 }
 
 // Structure for iface mtu get/set ioctls
@@ -48,10 +59,27 @@ type ifstat struct {
 	Ascii   [_IFSTATMAX]byte
 }
 
+// Structures for nd6 flag manipulation
+type in6_ndireq struct {
+	Name          [unix.IFNAMSIZ]byte
+	Linkmtu       uint32
+	Maxmtu        uint32
+	Basereachable uint32
+	Reachable     uint32
+	Retrans       uint32
+	Flags         uint32
+	Recalctm      int
+	Chlim         uint8
+	Initialized   uint8
+	Randomseed0   [8]byte
+	Randomseed1   [8]byte
+	Randomid      [8]byte
+}
+
 type NativeTun struct {
 	name        string
 	tunFile     *os.File
-	events      chan TUNEvent
+	events      chan Event
 	errors      chan error
 	routeSocket int
 }
@@ -97,16 +125,16 @@ func (tun *NativeTun) routineRouteListener(tunIfindex int) {
 		// Up / Down event
 		up := (iface.Flags & net.FlagUp) != 0
 		if up != statusUp && up {
-			tun.events <- TUNEventUp
+			tun.events <- EventUp
 		}
 		if up != statusUp && !up {
-			tun.events <- TUNEventDown
+			tun.events <- EventDown
 		}
 		statusUp = up
 
 		// MTU changes
 		if iface.MTU != statusMTU {
-			tun.events <- TUNEventMTUUpdate
+			tun.events <- EventMTUUpdate
 		}
 		statusMTU = iface.MTU
 	}
@@ -191,22 +219,17 @@ func tunName(fd uintptr) (string, error) {
 
 // Destroy a named system interface
 func tunDestroy(name string) error {
-	// open control socket
+	// Open control socket.
 	var fd int
-
 	fd, err := unix.Socket(
 		unix.AF_INET,
 		unix.SOCK_DGRAM,
 		0,
 	)
-
 	if err != nil {
 		return err
 	}
-
 	defer unix.Close(fd)
-
-	// do ioctl call
 
 	var ifr [32]byte
 	copy(ifr[:], name)
@@ -216,7 +239,6 @@ func tunDestroy(name string) error {
 		uintptr(unix.SIOCIFDESTROY),
 		uintptr(unsafe.Pointer(&ifr[0])),
 	)
-
 	if errno != 0 {
 		return fmt.Errorf("failed to destroy interface %s: %s", name, errno.Error())
 	}
@@ -224,7 +246,7 @@ func tunDestroy(name string) error {
 	return nil
 }
 
-func CreateTUN(name string, mtu int) (TUNDevice, error) {
+func CreateTUN(name string, mtu int) (Device, error) {
 	if len(name) > unix.IFNAMSIZ-1 {
 		return nil, errors.New("interface name too long")
 	}
@@ -263,33 +285,71 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	})
 
 	if errno != 0 {
-		return nil, fmt.Errorf("error %s", errno.Error())
+		tunFile.Close()
+		tunDestroy(assignedName)
+		return nil, fmt.Errorf("Unable to put into IFHEAD mode: %v", errno)
 	}
 
-	// Rename tun interface
-
-	// Open control socket
+	// Open control sockets
 	confd, err := unix.Socket(
 		unix.AF_INET,
 		unix.SOCK_DGRAM,
 		0,
 	)
-
 	if err != nil {
+		tunFile.Close()
+		tunDestroy(assignedName)
 		return nil, err
 	}
-
 	defer unix.Close(confd)
+	confd6, err := unix.Socket(
+		unix.AF_INET6,
+		unix.SOCK_DGRAM,
+		0,
+	)
+	if err != nil {
+		tunFile.Close()
+		tunDestroy(assignedName)
+		return nil, err
+	}
+	defer unix.Close(confd6)
 
-	// set up struct for iface rename
+	// Disable link-local v6, not just because WireGuard doesn't do that anyway, but
+	// also because there are serious races with attaching and detaching LLv6 addresses
+	// in relation to interface lifetime within the FreeBSD kernel.
+	var ndireq in6_ndireq
+	copy(ndireq.Name[:], assignedName)
+	_, _, errno = unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(confd6),
+		uintptr(SIOCGIFINFO_IN6),
+		uintptr(unsafe.Pointer(&ndireq)),
+	)
+	if errno != 0 {
+		tunFile.Close()
+		tunDestroy(assignedName)
+		return nil, fmt.Errorf("Unable to get nd6 flags for %s: %v", assignedName, errno)
+	}
+	ndireq.Flags = ndireq.Flags &^ ND6_IFF_AUTO_LINKLOCAL
+	ndireq.Flags = ndireq.Flags | ND6_IFF_NO_DAD
+	_, _, errno = unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(confd6),
+		uintptr(SIOCSIFINFO_IN6),
+		uintptr(unsafe.Pointer(&ndireq)),
+	)
+	if errno != 0 {
+		tunFile.Close()
+		tunDestroy(assignedName)
+		return nil, fmt.Errorf("Unable to set nd6 flags for %s: %v", assignedName, errno)
+	}
+
+	// Rename the interface
 	var newnp [unix.IFNAMSIZ]byte
 	copy(newnp[:], name)
-
 	var ifr ifreq_ptr
 	copy(ifr.Name[:], assignedName)
 	ifr.Data = uintptr(unsafe.Pointer(&newnp[0]))
-
-	//do actual ioctl to rename iface
 	_, _, errno = unix.Syscall(
 		unix.SYS_IOCTL,
 		uintptr(confd),
@@ -298,18 +358,18 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	)
 	if errno != 0 {
 		tunFile.Close()
-		tunDestroy(name)
-		return nil, fmt.Errorf("failed to rename %s to %s: %s", assignedName, name, errno.Error())
+		tunDestroy(assignedName)
+		return nil, fmt.Errorf("Failed to rename %s to %s: %v", assignedName, name, errno)
 	}
 
 	return CreateTUNFromFile(tunFile, mtu)
 }
 
-func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
+func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
 
 	tun := &NativeTun{
 		tunFile: file,
-		events:  make(chan TUNEvent, 10),
+		events:  make(chan Event, 10),
 		errors:  make(chan error, 1),
 	}
 
@@ -365,7 +425,7 @@ func (tun *NativeTun) File() *os.File {
 	return tun.tunFile
 }
 
-func (tun *NativeTun) Events() chan TUNEvent {
+func (tun *NativeTun) Events() chan Event {
 	return tun.events
 }
 
@@ -404,6 +464,11 @@ func (tun *NativeTun) Write(buff []byte, offset int) (int, error) {
 	// write
 
 	return tun.tunFile.Write(buff)
+}
+
+func (tun *NativeTun) Flush() error {
+	// TODO: can flushing be implemented by buffering and using sendmmsg?
+	return nil
 }
 
 func (tun *NativeTun) Close() error {

@@ -18,13 +18,14 @@ package device
 
 import (
 	"errors"
-	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/rwcancel"
 	"net"
 	"strconv"
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
+	"golang.zx2c4.com/wireguard/rwcancel"
 )
 
 const (
@@ -390,6 +391,11 @@ func create4(port uint16) (int, uint16, error) {
 		return FD_ERR, 0, err
 	}
 
+	sa, err := unix.Getsockname(fd)
+	if err == nil {
+		addr.Port = sa.(*unix.SockaddrInet4).Port
+	}
+
 	return fd, uint16(addr.Port), err
 }
 
@@ -447,6 +453,11 @@ func create6(port uint16) (int, uint16, error) {
 	}(); err != nil {
 		unix.Close(fd)
 		return FD_ERR, 0, err
+	}
+
+	sa, err := unix.Getsockname(fd)
+	if err == nil {
+		addr.Port = sa.(*unix.SockaddrInet6).Port
 	}
 
 	return fd, uint16(addr.Port), err
@@ -719,7 +730,7 @@ func (bind *nativeBind) routineRouteListener(device *Device) {
 							peer.endpoint.(*NativeEndpoint).src4().src,
 							unix.RtAttr{
 								Len:  8,
-								Type: 0x10, //unix.RTA_MARK  TODO: add this to x/sys/unix
+								Type: unix.RTA_MARK,
 							},
 							uint32(bind.lastMark),
 						}

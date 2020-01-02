@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -67,7 +68,6 @@ type Peer struct {
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
-
 	if device.isClosed.Get() {
 		return nil, errors.New("device closed")
 	}
@@ -102,19 +102,27 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	if ok {
 		return nil, errors.New("adding existing peer")
 	}
-	device.peers.keyMap[pk] = peer
 
 	// pre-compute DH
 
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
-	handshake.remoteStatic = pk
 	handshake.precomputedStaticStatic = device.staticIdentity.privateKey.sharedSecret(pk)
+	ssIsZero := isZero(handshake.precomputedStaticStatic[:])
+	handshake.remoteStatic = pk
 	handshake.mutex.Unlock()
 
 	// reset endpoint
 
 	peer.endpoint = nil
+
+	// conditionally add
+
+	if !ssIsZero {
+		device.peers.keyMap[pk] = peer
+	} else {
+		return nil, nil
+	}
 
 	// start peer
 
@@ -140,7 +148,11 @@ func (peer *Peer) SendBuffer(buffer []byte) error {
 		return errors.New("no known endpoint for peer")
 	}
 
-	return peer.device.net.bind.Send(buffer, peer.endpoint)
+	err := peer.device.net.bind.Send(buffer, peer.endpoint)
+	if err == nil {
+		atomic.AddUint64(&peer.stats.txBytes, uint64(len(buffer)))
+	}
+	return err
 }
 
 func (peer *Peer) String() string {
@@ -225,6 +237,25 @@ func (peer *Peer) ZeroAndFlushAll() {
 	handshake.mutex.Unlock()
 
 	peer.FlushNonceQueue()
+}
+
+func (peer *Peer) ExpireCurrentKeypairs() {
+	handshake := &peer.handshake
+	handshake.mutex.Lock()
+	peer.device.indexTable.Delete(handshake.localIndex)
+	handshake.Clear()
+	handshake.mutex.Unlock()
+	peer.handshake.lastSentHandshake = time.Now().Add(-(RekeyTimeout + time.Second))
+
+	keypairs := &peer.keypairs
+	keypairs.Lock()
+	if keypairs.current != nil {
+		keypairs.current.sendNonce = RejectAfterMessages
+	}
+	if keypairs.next != nil {
+		keypairs.next.sendNonce = RejectAfterMessages
+	}
+	keypairs.Unlock()
 }
 
 func (peer *Peer) Stop() {

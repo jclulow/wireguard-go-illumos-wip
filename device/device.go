@@ -6,12 +6,13 @@
 package device
 
 import (
-	"golang.zx2c4.com/wireguard/ratelimiter"
-	"golang.zx2c4.com/wireguard/tun"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.zx2c4.com/wireguard/ratelimiter"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 const (
@@ -85,7 +86,7 @@ type Device struct {
 	}
 
 	tun struct {
-		device tun.TUNDevice
+		device tun.Device
 		mtu    int32
 	}
 }
@@ -132,6 +133,7 @@ func deviceUpdateState(device *Device) {
 	switch newIsUp {
 	case true:
 		if err := device.BindUpdate(); err != nil {
+			device.log.Error.Printf("Unable to update bind: %v\n", err)
 			device.isUp.Set(false)
 			break
 		}
@@ -199,18 +201,22 @@ func (device *Device) IsUnderLoad() bool {
 }
 
 func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
-
 	// lock required resources
 
 	device.staticIdentity.Lock()
 	defer device.staticIdentity.Unlock()
 
+	if sk.Equals(device.staticIdentity.privateKey) {
+		return nil
+	}
+
 	device.peers.Lock()
 	defer device.peers.Unlock()
 
+	lockedPeers := make([]*Peer, 0, len(device.peers.keyMap))
 	for _, peer := range device.peers.keyMap {
 		peer.handshake.mutex.RLock()
-		defer peer.handshake.mutex.RUnlock()
+		lockedPeers = append(lockedPeers, peer)
 	}
 
 	// remove peers with matching public keys
@@ -232,8 +238,8 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 
 	rmKey := device.staticIdentity.privateKey.IsZero()
 
+	expiredPeers := make([]*Peer, 0, len(device.peers.keyMap))
 	for key, peer := range device.peers.keyMap {
-
 		handshake := &peer.handshake
 
 		if rmKey {
@@ -244,13 +250,22 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 
 		if isZero(handshake.precomputedStaticStatic[:]) {
 			unsafeRemovePeer(device, peer, key)
+		} else {
+			expiredPeers = append(expiredPeers, peer)
 		}
+	}
+
+	for _, peer := range lockedPeers {
+		peer.handshake.mutex.RUnlock()
+	}
+	for _, peer := range expiredPeers {
+		peer.ExpireCurrentKeypairs()
 	}
 
 	return nil
 }
 
-func NewDevice(tunDevice tun.TUNDevice, logger *Logger) *Device {
+func NewDevice(tunDevice tun.Device, logger *Logger) *Device {
 	device := new(Device)
 
 	device.isUp.Set(false)
@@ -322,7 +337,6 @@ func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
 func (device *Device) RemovePeer(key NoisePublicKey) {
 	device.peers.Lock()
 	defer device.peers.Unlock()
-
 	// stop peer and remove from routing
 
 	peer, ok := device.peers.keyMap[key]
@@ -393,4 +407,21 @@ func (device *Device) Close() {
 
 func (device *Device) Wait() chan struct{} {
 	return device.signals.stop
+}
+
+func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
+	if device.isClosed.Get() {
+		return
+	}
+
+	device.peers.RLock()
+	for _, peer := range device.peers.keyMap {
+		peer.keypairs.RLock()
+		sendKeepalive := peer.keypairs.current != nil && !peer.keypairs.current.created.Add(RejectAfterTime).Before(time.Now())
+		peer.keypairs.RUnlock()
+		if sendKeepalive {
+			peer.SendKeepalive()
+		}
+	}
+	device.peers.RUnlock()
 }

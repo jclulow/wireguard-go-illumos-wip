@@ -7,13 +7,14 @@ package tun
 
 import (
 	"fmt"
-	"golang.org/x/net/ipv6"
-	"golang.org/x/sys/unix"
 	"io/ioutil"
 	"net"
 	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
 // Structure for iface mtu get/set ioctls
@@ -28,7 +29,7 @@ const _TUNSIFMODE = 0x8004745d
 type NativeTun struct {
 	name        string
 	tunFile     *os.File
-	events      chan TUNEvent
+	events      chan Event
 	errors      chan error
 	routeSocket int
 }
@@ -41,13 +42,41 @@ func (tun *NativeTun) routineRouteListener(tunIfindex int) {
 
 	defer close(tun.events)
 
+	check := func() bool {
+		iface, err := net.InterfaceByIndex(tunIfindex)
+		if err != nil {
+			tun.errors <- err
+			return true
+		}
+
+		// Up / Down event
+		up := (iface.Flags & net.FlagUp) != 0
+		if up != statusUp && up {
+			tun.events <- EventUp
+		}
+		if up != statusUp && !up {
+			tun.events <- EventDown
+		}
+		statusUp = up
+
+		// MTU changes
+		if iface.MTU != statusMTU {
+			tun.events <- EventMTUUpdate
+		}
+		statusMTU = iface.MTU
+		return false
+	}
+
+	if check() {
+		return
+	}
+
 	data := make([]byte, os.Getpagesize())
 	for {
-	retry:
 		n, err := unix.Read(tun.routeSocket, data)
 		if err != nil {
 			if errno, ok := err.(syscall.Errno); ok && errno == syscall.EINTR {
-				goto retry
+				continue
 			}
 			tun.errors <- err
 			return
@@ -64,28 +93,9 @@ func (tun *NativeTun) routineRouteListener(tunIfindex int) {
 		if ifindex != tunIfindex {
 			continue
 		}
-
-		iface, err := net.InterfaceByIndex(ifindex)
-		if err != nil {
-			tun.errors <- err
+		if check() {
 			return
 		}
-
-		// Up / Down event
-		up := (iface.Flags & net.FlagUp) != 0
-		if up != statusUp && up {
-			tun.events <- TUNEventUp
-		}
-		if up != statusUp && !up {
-			tun.events <- TUNEventDown
-		}
-		statusUp = up
-
-		// MTU changes
-		if iface.MTU != statusMTU {
-			tun.events <- TUNEventMTUUpdate
-		}
-		statusMTU = iface.MTU
 	}
 }
 
@@ -99,7 +109,7 @@ func errorIsEBUSY(err error) bool {
 	return false
 }
 
-func CreateTUN(name string, mtu int) (TUNDevice, error) {
+func CreateTUN(name string, mtu int) (Device, error) {
 	ifIndex := -1
 	if name != "tun" {
 		_, err := fmt.Sscanf(name, "tun%d", &ifIndex)
@@ -138,11 +148,10 @@ func CreateTUN(name string, mtu int) (TUNDevice, error) {
 	return tun, err
 }
 
-func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
-
+func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
 	tun := &NativeTun{
 		tunFile: file,
-		events:  make(chan TUNEvent, 10),
+		events:  make(chan Event, 10),
 		errors:  make(chan error, 1),
 	}
 
@@ -172,10 +181,13 @@ func CreateTUNFromFile(file *os.File, mtu int) (TUNDevice, error) {
 
 	go tun.routineRouteListener(tunIfindex)
 
-	err = tun.setMTU(mtu)
-	if err != nil {
-		tun.Close()
-		return nil, err
+	currentMTU, err := tun.MTU()
+	if err != nil || currentMTU != mtu {
+		err = tun.setMTU(mtu)
+		if err != nil {
+			tun.Close()
+			return nil, err
+		}
 	}
 
 	return tun, nil
@@ -196,7 +208,7 @@ func (tun *NativeTun) File() *os.File {
 	return tun.tunFile
 }
 
-func (tun *NativeTun) Events() chan TUNEvent {
+func (tun *NativeTun) Events() chan Event {
 	return tun.events
 }
 
@@ -235,6 +247,11 @@ func (tun *NativeTun) Write(buff []byte, offset int) (int, error) {
 	// write
 
 	return tun.tunFile.Write(buff)
+}
+
+func (tun *NativeTun) Flush() error {
+	// TODO: can flushing be implemented by buffering and using sendmmsg?
+	return nil
 }
 
 func (tun *NativeTun) Close() error {

@@ -8,13 +8,14 @@ package device
 import (
 	"bufio"
 	"fmt"
-	"golang.zx2c4.com/wireguard/ipc"
 	"io"
 	"net"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.zx2c4.com/wireguard/ipc"
 )
 
 type IPCError struct {
@@ -30,11 +31,6 @@ func (s IPCError) ErrorCode() int64 {
 }
 
 func (device *Device) IpcGetOperation(socket *bufio.Writer) *IPCError {
-
-	device.log.Debug.Println("UAPI: Processing get operation")
-
-	// create lines
-
 	lines := make([]string, 0, 100)
 	send := func(line string) {
 		lines = append(lines, line)
@@ -117,6 +113,7 @@ func (device *Device) IpcSetOperation(socket *bufio.Reader) *IPCError {
 	var peer *Peer
 
 	dummy := false
+	createdNewPeer := false
 	deviceConfig := true
 
 	for scanner.Scan() {
@@ -241,13 +238,33 @@ func (device *Device) IpcSetOperation(socket *bufio.Reader) *IPCError {
 					peer = device.LookupPeer(publicKey)
 				}
 
-				if peer == nil {
+				createdNewPeer = peer == nil
+				if createdNewPeer {
 					peer, err = device.NewPeer(publicKey)
 					if err != nil {
 						logError.Println("Failed to create new peer:", err)
 						return &IPCError{ipc.IpcErrorInvalid}
 					}
-					logDebug.Println(peer, "- UAPI: Created")
+					if peer == nil {
+						dummy = true
+						peer = &Peer{}
+					} else {
+						logDebug.Println(peer, "- UAPI: Created")
+					}
+				}
+
+			case "update_only":
+
+				// allow disabling of creation
+
+				if value != "true" {
+					logError.Println("Failed to set update only, invalid value:", value)
+					return &IPCError{ipc.IpcErrorInvalid}
+				}
+				if createdNewPeer && !dummy {
+					device.RemovePeer(peer.handshake.remoteStatic)
+					peer = &Peer{}
+					dummy = true
 				}
 
 			case "remove":
@@ -298,7 +315,7 @@ func (device *Device) IpcSetOperation(socket *bufio.Reader) *IPCError {
 				}()
 
 				if err != nil {
-					logError.Println("Failed to set endpoint:", value)
+					logError.Println("Failed to set endpoint:", err, ":", value)
 					return &IPCError{ipc.IpcErrorInvalid}
 				}
 
@@ -403,11 +420,9 @@ func (device *Device) IpcHandle(socket net.Conn) {
 
 	switch op {
 	case "set=1\n":
-		device.log.Debug.Println("UAPI: Set operation")
 		status = device.IpcSetOperation(buffered.Reader)
 
 	case "get=1\n":
-		device.log.Debug.Println("UAPI: Get operation")
 		status = device.IpcGetOperation(buffered.Writer)
 
 	default:

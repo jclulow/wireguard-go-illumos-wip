@@ -8,13 +8,14 @@ package device
 import (
 	"bytes"
 	"encoding/binary"
-	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 /* Outbound flow
@@ -128,14 +129,14 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	}
 
 	peer.handshake.mutex.RLock()
-	if time.Now().Sub(peer.handshake.lastSentHandshake) < RekeyTimeout {
+	if time.Since(peer.handshake.lastSentHandshake) < RekeyTimeout {
 		peer.handshake.mutex.RUnlock()
 		return nil
 	}
 	peer.handshake.mutex.RUnlock()
 
 	peer.handshake.mutex.Lock()
-	if time.Now().Sub(peer.handshake.lastSentHandshake) < RekeyTimeout {
+	if time.Since(peer.handshake.lastSentHandshake) < RekeyTimeout {
 		peer.handshake.mutex.Unlock()
 		return nil
 	}
@@ -231,7 +232,7 @@ func (peer *Peer) keepKeyFreshSending() {
 		return
 	}
 	nonce := atomic.LoadUint64(&keypair.sendNonce)
-	if nonce > RekeyAfterMessages || (keypair.isInitiator && time.Now().Sub(keypair.created) > RekeyAfterTime) {
+	if nonce > RekeyAfterMessages || (keypair.isInitiator && time.Since(keypair.created) > RekeyAfterTime) {
 		peer.SendHandshakeInitiation(false)
 	}
 }
@@ -389,7 +390,7 @@ func (peer *Peer) RoutineNonce() {
 
 				keypair = peer.keypairs.Current()
 				if keypair != nil && keypair.sendNonce < RejectAfterMessages {
-					if time.Now().Sub(keypair.created) < RejectAfterTime {
+					if time.Since(keypair.created) < RejectAfterTime {
 						break
 					}
 				}
@@ -599,19 +600,17 @@ func (peer *Peer) RoutineSequentialSender() {
 
 			// send message and return buffer to pool
 
-			length := uint64(len(elem.packet))
 			err := peer.SendBuffer(elem.packet)
+			if len(elem.packet) != MessageKeepaliveSize {
+				peer.timersDataSent()
+			}
 			device.PutMessageBuffer(elem.buffer)
 			device.PutOutboundElement(elem)
 			if err != nil {
 				logError.Println(peer, "- Failed to send data packet", err)
 				continue
 			}
-			atomic.AddUint64(&peer.stats.txBytes, length)
 
-			if len(elem.packet) != MessageKeepaliveSize {
-				peer.timersDataSent()
-			}
 			peer.keepKeyFreshSending()
 		}
 	}

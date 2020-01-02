@@ -7,12 +7,13 @@ package device
 
 import (
 	"errors"
+	"sync"
+	"time"
+
 	"golang.org/x/crypto/blake2s"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/poly1305"
 	"golang.zx2c4.com/wireguard/tai64n"
-	"sync"
-	"time"
 )
 
 const (
@@ -300,7 +301,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 
 	var ok bool
 	ok = timestamp.After(handshake.lastTimestamp)
-	ok = ok && time.Now().Sub(handshake.lastInitiationConsumption) > HandshakeInitationRate
+	ok = ok && time.Since(handshake.lastInitiationConsumption) > HandshakeInitationRate
 	handshake.mutex.RUnlock()
 	if !ok {
 		return nil

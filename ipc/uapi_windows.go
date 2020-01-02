@@ -6,11 +6,14 @@
 package ipc
 
 import (
-	"github.com/Microsoft/go-winio"
 	"net"
+
+	"golang.org/x/sys/windows"
+
+	"golang.zx2c4.com/wireguard/ipc/winpipe"
 )
 
-//TODO: replace these with actual standard windows error numbers from the win package
+// TODO: replace these with actual standard windows error numbers from the win package
 const (
 	IpcErrorIO        = -int64(5)
 	IpcErrorProtocol  = -int64(71)
@@ -46,22 +49,22 @@ func (l *UAPIListener) Addr() net.Addr {
 	return l.listener.Addr()
 }
 
-func GetSystemSecurityDescriptor() string {
-	//
-	// SDDL encoded.
-	//
-	// (system = SECURITY_NT_AUTHORITY | SECURITY_LOCAL_SYSTEM_RID)
-	// owner: system
-	// grant: GENERIC_ALL to system
-	//
-	return "O:SYD:(A;;GA;;;SY)"
+var UAPISecurityDescriptor *windows.SECURITY_DESCRIPTOR
+
+func init() {
+	var err error
+	/* SDDL_DEVOBJ_SYS_ALL from the WDK */
+	UAPISecurityDescriptor, err = windows.SecurityDescriptorFromString("O:SYD:P(A;;GA;;;SY)")
+	if err != nil {
+		panic(err)
+	}
 }
 
 func UAPIListen(name string) (net.Listener, error) {
-	config := winio.PipeConfig{
-		SecurityDescriptor: GetSystemSecurityDescriptor(),
+	config := winpipe.PipeConfig{
+		SecurityDescriptor: UAPISecurityDescriptor,
 	}
-	listener, err := winio.ListenPipe("\\\\.\\pipe\\WireGuard\\"+name, &config)
+	listener, err := winpipe.ListenPipe(`\\.\pipe\ProtectedPrefix\Administrators\WireGuard\`+name, &config)
 	if err != nil {
 		return nil, err
 	}
