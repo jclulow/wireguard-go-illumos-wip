@@ -1,20 +1,18 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2020 WireGuard LLC. All Rights Reserved.
  */
 
 package setupapi
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"syscall"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
-	"golang.zx2c4.com/wireguard/tun/wintun/guid"
 )
 
 //sys	setupDiCreateDeviceInfoListEx(classGUID *windows.GUID, hwndParent uintptr, machineName *uint16, reserved uintptr) (handle DevInfo, err error) [failretval==DevInfo(windows.InvalidHandle)] = setupapi.SetupDiCreateDeviceInfoListExW
@@ -23,7 +21,7 @@ import (
 func SetupDiCreateDeviceInfoListEx(classGUID *windows.GUID, hwndParent uintptr, machineName string) (deviceInfoSet DevInfo, err error) {
 	var machineNameUTF16 *uint16
 	if machineName != "" {
-		machineNameUTF16, err = syscall.UTF16PtrFromString(machineName)
+		machineNameUTF16, err = windows.UTF16PtrFromString(machineName)
 		if err != nil {
 			return
 		}
@@ -36,13 +34,13 @@ func SetupDiCreateDeviceInfoListEx(classGUID *windows.GUID, hwndParent uintptr, 
 // SetupDiGetDeviceInfoListDetail function retrieves information associated with a device information set including the class GUID, remote computer handle, and remote computer name.
 func SetupDiGetDeviceInfoListDetail(deviceInfoSet DevInfo) (deviceInfoSetDetailData *DevInfoListDetailData, err error) {
 	data := &DevInfoListDetailData{}
-	data.size = uint32(unsafe.Sizeof(*data))
+	data.size = sizeofDevInfoListDetailData
 
 	return data, setupDiGetDeviceInfoListDetail(deviceInfoSet, data)
 }
 
-// GetDeviceInfoListDetail method retrieves information associated with a device information set including the class GUID, remote computer handle, and remote computer name.
-func (deviceInfoSet DevInfo) GetDeviceInfoListDetail() (*DevInfoListDetailData, error) {
+// DeviceInfoListDetail method retrieves information associated with a device information set including the class GUID, remote computer handle, and remote computer name.
+func (deviceInfoSet DevInfo) DeviceInfoListDetail() (*DevInfoListDetailData, error) {
 	return SetupDiGetDeviceInfoListDetail(deviceInfoSet)
 }
 
@@ -50,14 +48,14 @@ func (deviceInfoSet DevInfo) GetDeviceInfoListDetail() (*DevInfoListDetailData, 
 
 // SetupDiCreateDeviceInfo function creates a new device information element and adds it as a new member to the specified device information set.
 func SetupDiCreateDeviceInfo(deviceInfoSet DevInfo, deviceName string, classGUID *windows.GUID, deviceDescription string, hwndParent uintptr, creationFlags DICD) (deviceInfoData *DevInfoData, err error) {
-	deviceNameUTF16, err := syscall.UTF16PtrFromString(deviceName)
+	deviceNameUTF16, err := windows.UTF16PtrFromString(deviceName)
 	if err != nil {
 		return
 	}
 
 	var deviceDescriptionUTF16 *uint16
 	if deviceDescription != "" {
-		deviceDescriptionUTF16, err = syscall.UTF16PtrFromString(deviceDescription)
+		deviceDescriptionUTF16, err = windows.UTF16PtrFromString(deviceDescription)
 		if err != nil {
 			return
 		}
@@ -136,8 +134,8 @@ func SetupDiGetSelectedDriver(deviceInfoSet DevInfo, deviceInfoData *DevInfoData
 	return data, setupDiGetSelectedDriver(deviceInfoSet, deviceInfoData, data)
 }
 
-// GetSelectedDriver method retrieves the selected driver for a device information set or a particular device information element.
-func (deviceInfoSet DevInfo) GetSelectedDriver(deviceInfoData *DevInfoData) (*DrvInfoData, error) {
+// SelectedDriver method retrieves the selected driver for a device information set or a particular device information element.
+func (deviceInfoSet DevInfo) SelectedDriver(deviceInfoData *DevInfoData) (*DrvInfoData, error) {
 	return SetupDiGetSelectedDriver(deviceInfoSet, deviceInfoData)
 }
 
@@ -152,38 +150,25 @@ func (deviceInfoSet DevInfo) SetSelectedDriver(deviceInfoData *DevInfoData, driv
 
 // SetupDiGetDriverInfoDetail function retrieves driver information detail for a device information set or a particular device information element in the device information set.
 func SetupDiGetDriverInfoDetail(deviceInfoSet DevInfo, deviceInfoData *DevInfoData, driverInfoData *DrvInfoData) (*DrvInfoDetailData, error) {
-	const bufCapacity = 0x800
-	buf := [bufCapacity]byte{}
-	var bufLen uint32
-
-	data := (*DrvInfoDetailData)(unsafe.Pointer(&buf[0]))
-	data.size = uint32(unsafe.Sizeof(*data))
-
-	err := setupDiGetDriverInfoDetail(deviceInfoSet, deviceInfoData, driverInfoData, data, bufCapacity, &bufLen)
-	if err == nil {
-		// The buffer was was sufficiently big.
-		data.size = bufLen
+	reqSize := uint32(2048)
+	for {
+		buf := make([]byte, reqSize)
+		data := (*DrvInfoDetailData)(unsafe.Pointer(&buf[0]))
+		data.size = sizeofDrvInfoDetailData
+		err := setupDiGetDriverInfoDetail(deviceInfoSet, deviceInfoData, driverInfoData, data, uint32(len(buf)), &reqSize)
+		if err == windows.ERROR_INSUFFICIENT_BUFFER {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		data.size = reqSize
 		return data, nil
 	}
-
-	if errWin, ok := err.(syscall.Errno); ok && errWin == windows.ERROR_INSUFFICIENT_BUFFER {
-		// The buffer was too small. Now that we got the required size, create another one big enough and retry.
-		buf := make([]byte, bufLen)
-		data := (*DrvInfoDetailData)(unsafe.Pointer(&buf[0]))
-		data.size = uint32(unsafe.Sizeof(*data))
-
-		err = setupDiGetDriverInfoDetail(deviceInfoSet, deviceInfoData, driverInfoData, data, bufLen, &bufLen)
-		if err == nil {
-			data.size = bufLen
-			return data, nil
-		}
-	}
-
-	return nil, err
 }
 
-// GetDriverInfoDetail method retrieves driver information detail for a device information set or a particular device information element in the device information set.
-func (deviceInfoSet DevInfo) GetDriverInfoDetail(deviceInfoData *DevInfoData, driverInfoData *DrvInfoData) (*DrvInfoDetailData, error) {
+// DriverInfoDetail method retrieves driver information detail for a device information set or a particular device information element in the device information set.
+func (deviceInfoSet DevInfo) DriverInfoDetail(deviceInfoData *DevInfoData, driverInfoData *DrvInfoData) (*DrvInfoDetailData, error) {
 	return SetupDiGetDriverInfoDetail(deviceInfoSet, deviceInfoData, driverInfoData)
 }
 
@@ -200,14 +185,14 @@ func (deviceInfoSet DevInfo) DestroyDriverInfoList(deviceInfoData *DevInfoData, 
 func SetupDiGetClassDevsEx(classGUID *windows.GUID, enumerator string, hwndParent uintptr, flags DIGCF, deviceInfoSet DevInfo, machineName string) (handle DevInfo, err error) {
 	var enumeratorUTF16 *uint16
 	if enumerator != "" {
-		enumeratorUTF16, err = syscall.UTF16PtrFromString(enumerator)
+		enumeratorUTF16, err = windows.UTF16PtrFromString(enumerator)
 		if err != nil {
 			return
 		}
 	}
 	var machineNameUTF16 *uint16
 	if machineName != "" {
-		machineNameUTF16, err = syscall.UTF16PtrFromString(machineName)
+		machineNameUTF16, err = windows.UTF16PtrFromString(machineName)
 		if err != nil {
 			return
 		}
@@ -236,63 +221,35 @@ func (deviceInfoSet DevInfo) OpenDevRegKey(DeviceInfoData *DevInfoData, Scope DI
 	return SetupDiOpenDevRegKey(deviceInfoSet, DeviceInfoData, Scope, HwProfile, KeyType, samDesired)
 }
 
-// GetInterfaceID method returns network interface ID.
-func (deviceInfoSet DevInfo) GetInterfaceID(deviceInfoData *DevInfoData) (*windows.GUID, error) {
-	// Open HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\<class>\<id> registry key.
-	key, err := deviceInfoSet.OpenDevRegKey(deviceInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, registry.READ)
-	if err != nil {
-		return nil, errors.New("Device-specific registry key open failed: " + err.Error())
-	}
-	defer key.Close()
-
-	// Read the NetCfgInstanceId value.
-	value, valueType, err := key.GetStringValue("NetCfgInstanceId")
-	if err != nil {
-		return nil, errors.New("RegQueryStringValue(\"NetCfgInstanceId\") failed: " + err.Error())
-	}
-	if valueType != registry.SZ {
-		return nil, fmt.Errorf("NetCfgInstanceId registry value is not REG_SZ (expected: %v, provided: %v)", registry.SZ, valueType)
-	}
-
-	// Convert to windows.GUID.
-	ifid, err := guid.FromString(value)
-	if err != nil {
-		return nil, fmt.Errorf("NetCfgInstanceId registry value is not a GUID (expected: \"{...}\", provided: %q)", value)
-	}
-
-	return ifid, nil
-}
-
 //sys	setupDiGetDeviceRegistryProperty(deviceInfoSet DevInfo, deviceInfoData *DevInfoData, property SPDRP, propertyRegDataType *uint32, propertyBuffer *byte, propertyBufferSize uint32, requiredSize *uint32) (err error) = setupapi.SetupDiGetDeviceRegistryPropertyW
 
 // SetupDiGetDeviceRegistryProperty function retrieves a specified Plug and Play device property.
 func SetupDiGetDeviceRegistryProperty(deviceInfoSet DevInfo, deviceInfoData *DevInfoData, property SPDRP) (value interface{}, err error) {
-	buf := make([]byte, 0x100)
-	var dataType, bufLen uint32
-	err = setupDiGetDeviceRegistryProperty(deviceInfoSet, deviceInfoData, property, &dataType, &buf[0], uint32(cap(buf)), &bufLen)
-	if err == nil {
-		// The buffer was sufficiently big.
-		return getRegistryValue(buf[:bufLen], dataType)
-	}
-
-	if errWin, ok := err.(syscall.Errno); ok && errWin == windows.ERROR_INSUFFICIENT_BUFFER {
-		// The buffer was too small. Now that we got the required size, create another one big enough and retry.
-		buf = make([]byte, bufLen)
-		err = setupDiGetDeviceRegistryProperty(deviceInfoSet, deviceInfoData, property, &dataType, &buf[0], uint32(cap(buf)), &bufLen)
-		if err == nil {
-			return getRegistryValue(buf[:bufLen], dataType)
+	reqSize := uint32(256)
+	for {
+		var dataType uint32
+		buf := make([]byte, reqSize)
+		err = setupDiGetDeviceRegistryProperty(deviceInfoSet, deviceInfoData, property, &dataType, &buf[0], uint32(len(buf)), &reqSize)
+		if err == windows.ERROR_INSUFFICIENT_BUFFER {
+			continue
 		}
+		if err != nil {
+			return
+		}
+		return getRegistryValue(buf[:reqSize], dataType)
 	}
-
-	return
 }
 
 func getRegistryValue(buf []byte, dataType uint32) (interface{}, error) {
 	switch dataType {
 	case windows.REG_SZ:
-		return windows.UTF16ToString(BufToUTF16(buf)), nil
+		ret := windows.UTF16ToString(bufToUTF16(buf))
+		runtime.KeepAlive(buf)
+		return ret, nil
 	case windows.REG_EXPAND_SZ:
-		return registry.ExpandString(windows.UTF16ToString(BufToUTF16(buf)))
+		ret, err := registry.ExpandString(windows.UTF16ToString(bufToUTF16(buf)))
+		runtime.KeepAlive(buf)
+		return ret, err
 	case windows.REG_BINARY:
 		return buf, nil
 	case windows.REG_DWORD_LITTLE_ENDIAN:
@@ -300,7 +257,7 @@ func getRegistryValue(buf []byte, dataType uint32) (interface{}, error) {
 	case windows.REG_DWORD_BIG_ENDIAN:
 		return binary.BigEndian.Uint32(buf), nil
 	case windows.REG_MULTI_SZ:
-		bufW := BufToUTF16(buf)
+		bufW := bufToUTF16(buf)
 		a := []string{}
 		for i := 0; i < len(bufW); {
 			j := i + wcslen(bufW[i:])
@@ -309,6 +266,7 @@ func getRegistryValue(buf []byte, dataType uint32) (interface{}, error) {
 			}
 			i = j + 1
 		}
+		runtime.KeepAlive(buf)
 		return a, nil
 	case windows.REG_QWORD_LITTLE_ENDIAN:
 		return binary.LittleEndian.Uint64(buf), nil
@@ -317,8 +275,8 @@ func getRegistryValue(buf []byte, dataType uint32) (interface{}, error) {
 	}
 }
 
-// BufToUTF16 function reinterprets []byte buffer as []uint16
-func BufToUTF16(buf []byte) []uint16 {
+// bufToUTF16 function reinterprets []byte buffer as []uint16
+func bufToUTF16(buf []byte) []uint16 {
 	sl := struct {
 		addr *uint16
 		len  int
@@ -327,8 +285,8 @@ func BufToUTF16(buf []byte) []uint16 {
 	return *(*[]uint16)(unsafe.Pointer(&sl))
 }
 
-// UTF16ToBuf function reinterprets []uint16 as []byte
-func UTF16ToBuf(buf []uint16) []byte {
+// utf16ToBuf function reinterprets []uint16 as []byte
+func utf16ToBuf(buf []uint16) []byte {
 	sl := struct {
 		addr *byte
 		len  int
@@ -346,8 +304,8 @@ func wcslen(str []uint16) int {
 	return len(str)
 }
 
-// GetDeviceRegistryProperty method retrieves a specified Plug and Play device property.
-func (deviceInfoSet DevInfo) GetDeviceRegistryProperty(deviceInfoData *DevInfoData, property SPDRP) (interface{}, error) {
+// DeviceRegistryProperty method retrieves a specified Plug and Play device property.
+func (deviceInfoSet DevInfo) DeviceRegistryProperty(deviceInfoData *DevInfoData, property SPDRP) (interface{}, error) {
 	return SetupDiGetDeviceRegistryProperty(deviceInfoSet, deviceInfoData, property)
 }
 
@@ -363,6 +321,17 @@ func (deviceInfoSet DevInfo) SetDeviceRegistryProperty(deviceInfoData *DevInfoDa
 	return SetupDiSetDeviceRegistryProperty(deviceInfoSet, deviceInfoData, property, propertyBuffers)
 }
 
+// SetDeviceRegistryPropertyString method sets a Plug and Play device property string for a device.
+func (deviceInfoSet DevInfo) SetDeviceRegistryPropertyString(deviceInfoData *DevInfoData, property SPDRP, str string) error {
+	str16, err := windows.UTF16FromString(str)
+	if err != nil {
+		return err
+	}
+	err = SetupDiSetDeviceRegistryProperty(deviceInfoSet, deviceInfoData, property, utf16ToBuf(append(str16, 0)))
+	runtime.KeepAlive(str16)
+	return err
+}
+
 //sys	setupDiGetDeviceInstallParams(deviceInfoSet DevInfo, deviceInfoData *DevInfoData, deviceInstallParams *DevInstallParams) (err error) = setupapi.SetupDiGetDeviceInstallParamsW
 
 // SetupDiGetDeviceInstallParams function retrieves device installation parameters for a device information set or a particular device information element.
@@ -373,16 +342,39 @@ func SetupDiGetDeviceInstallParams(deviceInfoSet DevInfo, deviceInfoData *DevInf
 	return params, setupDiGetDeviceInstallParams(deviceInfoSet, deviceInfoData, params)
 }
 
-// GetDeviceInstallParams method retrieves device installation parameters for a device information set or a particular device information element.
-func (deviceInfoSet DevInfo) GetDeviceInstallParams(deviceInfoData *DevInfoData) (*DevInstallParams, error) {
+// DeviceInstallParams method retrieves device installation parameters for a device information set or a particular device information element.
+func (deviceInfoSet DevInfo) DeviceInstallParams(deviceInfoData *DevInfoData) (*DevInstallParams, error) {
 	return SetupDiGetDeviceInstallParams(deviceInfoSet, deviceInfoData)
+}
+
+//sys	setupDiGetDeviceInstanceId(deviceInfoSet DevInfo, deviceInfoData *DevInfoData, instanceId *uint16, instanceIdSize uint32, instanceIdRequiredSize *uint32) (err error) = setupapi.SetupDiGetDeviceInstanceIdW
+
+// SetupDiGetDeviceInstanceId function retrieves the instance ID of the device.
+func SetupDiGetDeviceInstanceId(deviceInfoSet DevInfo, deviceInfoData *DevInfoData) (string, error) {
+	reqSize := uint32(1024)
+	for {
+		buf := make([]uint16, reqSize)
+		err := setupDiGetDeviceInstanceId(deviceInfoSet, deviceInfoData, &buf[0], uint32(len(buf)), &reqSize)
+		if err == windows.ERROR_INSUFFICIENT_BUFFER {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return windows.UTF16ToString(buf), nil
+	}
+}
+
+// DeviceInstanceID method retrieves the instance ID of the device.
+func (deviceInfoSet DevInfo) DeviceInstanceID(deviceInfoData *DevInfoData) (string, error) {
+	return SetupDiGetDeviceInstanceId(deviceInfoSet, deviceInfoData)
 }
 
 // SetupDiGetClassInstallParams function retrieves class installation parameters for a device information set or a particular device information element.
 //sys	SetupDiGetClassInstallParams(deviceInfoSet DevInfo, deviceInfoData *DevInfoData, classInstallParams *ClassInstallHeader, classInstallParamsSize uint32, requiredSize *uint32) (err error) = setupapi.SetupDiGetClassInstallParamsW
 
-// GetClassInstallParams method retrieves class installation parameters for a device information set or a particular device information element.
-func (deviceInfoSet DevInfo) GetClassInstallParams(deviceInfoData *DevInfoData, classInstallParams *ClassInstallHeader, classInstallParamsSize uint32, requiredSize *uint32) error {
+// ClassInstallParams method retrieves class installation parameters for a device information set or a particular device information element.
+func (deviceInfoSet DevInfo) ClassInstallParams(deviceInfoData *DevInfoData, classInstallParams *ClassInstallHeader, classInstallParamsSize uint32, requiredSize *uint32) error {
 	return SetupDiGetClassInstallParams(deviceInfoSet, deviceInfoData, classInstallParams, classInstallParamsSize, requiredSize)
 }
 
@@ -409,7 +401,7 @@ func SetupDiClassNameFromGuidEx(classGUID *windows.GUID, machineName string) (cl
 
 	var machineNameUTF16 *uint16
 	if machineName != "" {
-		machineNameUTF16, err = syscall.UTF16PtrFromString(machineName)
+		machineNameUTF16, err = windows.UTF16PtrFromString(machineName)
 		if err != nil {
 			return
 		}
@@ -428,39 +420,31 @@ func SetupDiClassNameFromGuidEx(classGUID *windows.GUID, machineName string) (cl
 
 // SetupDiClassGuidsFromNameEx function retrieves the GUIDs associated with the specified class name. This resulting list contains the classes currently installed on a local or remote computer.
 func SetupDiClassGuidsFromNameEx(className string, machineName string) ([]windows.GUID, error) {
-	classNameUTF16, err := syscall.UTF16PtrFromString(className)
+	classNameUTF16, err := windows.UTF16PtrFromString(className)
 	if err != nil {
 		return nil, err
 	}
 
-	const bufCapacity = 4
-	var buf [bufCapacity]windows.GUID
-	var bufLen uint32
-
 	var machineNameUTF16 *uint16
 	if machineName != "" {
-		machineNameUTF16, err = syscall.UTF16PtrFromString(machineName)
+		machineNameUTF16, err = windows.UTF16PtrFromString(machineName)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	err = setupDiClassGuidsFromNameEx(classNameUTF16, &buf[0], bufCapacity, &bufLen, machineNameUTF16, 0)
-	if err == nil {
-		// The GUID array was sufficiently big. Return its slice.
-		return buf[:bufLen], nil
-	}
-
-	if errWin, ok := err.(syscall.Errno); ok && errWin == windows.ERROR_INSUFFICIENT_BUFFER {
-		// The GUID array was too small. Now that we got the required size, create another one big enough and retry.
-		buf := make([]windows.GUID, bufLen)
-		err = setupDiClassGuidsFromNameEx(classNameUTF16, &buf[0], bufLen, &bufLen, machineNameUTF16, 0)
-		if err == nil {
-			return buf[:bufLen], nil
+	reqSize := uint32(4)
+	for {
+		buf := make([]windows.GUID, reqSize)
+		err = setupDiClassGuidsFromNameEx(classNameUTF16, &buf[0], uint32(len(buf)), &reqSize, machineNameUTF16, 0)
+		if err == windows.ERROR_INSUFFICIENT_BUFFER {
+			continue
 		}
+		if err != nil {
+			return nil, err
+		}
+		return buf[:reqSize], nil
 	}
-
-	return nil, err
 }
 
 //sys	setupDiGetSelectedDevice(deviceInfoSet DevInfo, deviceInfoData *DevInfoData) (err error) = setupapi.SetupDiGetSelectedDevice
@@ -473,8 +457,8 @@ func SetupDiGetSelectedDevice(deviceInfoSet DevInfo) (*DevInfoData, error) {
 	return data, setupDiGetSelectedDevice(deviceInfoSet, data)
 }
 
-// GetSelectedDevice method retrieves the selected device information element in a device information set.
-func (deviceInfoSet DevInfo) GetSelectedDevice() (*DevInfoData, error) {
+// SelectedDevice method retrieves the selected device information element in a device information set.
+func (deviceInfoSet DevInfo) SelectedDevice() (*DevInfoData, error) {
 	return SetupDiGetSelectedDevice(deviceInfoSet)
 }
 
@@ -484,4 +468,39 @@ func (deviceInfoSet DevInfo) GetSelectedDevice() (*DevInfoData, error) {
 // SetSelectedDevice method sets a device information element as the selected member of a device information set. This function is typically used by an installation wizard.
 func (deviceInfoSet DevInfo) SetSelectedDevice(deviceInfoData *DevInfoData) error {
 	return SetupDiSetSelectedDevice(deviceInfoSet, deviceInfoData)
+}
+
+//sys cm_Get_Device_Interface_List_Size(len *uint32, interfaceClass *windows.GUID, deviceID *uint16, flags uint32) (ret uint32) = CfgMgr32.CM_Get_Device_Interface_List_SizeW
+//sys cm_Get_Device_Interface_List(interfaceClass *windows.GUID, deviceID *uint16, buffer *uint16, bufferLen uint32, flags uint32) (ret uint32) = CfgMgr32.CM_Get_Device_Interface_ListW
+
+func CM_Get_Device_Interface_List(deviceID string, interfaceClass *windows.GUID, flags uint32) ([]string, error) {
+	deviceID16, err := windows.UTF16PtrFromString(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	var buf []uint16
+	var buflen uint32
+	for {
+		if ret := cm_Get_Device_Interface_List_Size(&buflen, interfaceClass, deviceID16, flags); ret != CR_SUCCESS {
+			return nil, fmt.Errorf("CfgMgr error: 0x%x", ret)
+		}
+		buf = make([]uint16, buflen)
+		if ret := cm_Get_Device_Interface_List(interfaceClass, deviceID16, &buf[0], buflen, flags); ret == CR_SUCCESS {
+			break
+		} else if ret != CR_BUFFER_SMALL {
+			return nil, fmt.Errorf("CfgMgr error: 0x%x", ret)
+		}
+	}
+	var interfaces []string
+	for i := 0; i < len(buf); {
+		j := i + wcslen(buf[i:])
+		if i < j {
+			interfaces = append(interfaces, windows.UTF16ToString(buf[i:j]))
+		}
+		i = j + 1
+	}
+	if interfaces == nil {
+		return nil, fmt.Errorf("no interfaces found")
+	}
+	return interfaces, nil
 }

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -8,13 +8,14 @@ package device
 import (
 	"bytes"
 	"encoding/binary"
-	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 /* Outbound flow
@@ -128,14 +129,14 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	}
 
 	peer.handshake.mutex.RLock()
-	if time.Now().Sub(peer.handshake.lastSentHandshake) < RekeyTimeout {
+	if time.Since(peer.handshake.lastSentHandshake) < RekeyTimeout {
 		peer.handshake.mutex.RUnlock()
 		return nil
 	}
 	peer.handshake.mutex.RUnlock()
 
 	peer.handshake.mutex.Lock()
-	if time.Now().Sub(peer.handshake.lastSentHandshake) < RekeyTimeout {
+	if time.Since(peer.handshake.lastSentHandshake) < RekeyTimeout {
 		peer.handshake.mutex.Unlock()
 		return nil
 	}
@@ -219,10 +220,7 @@ func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement)
 	writer := bytes.NewBuffer(buff[:0])
 	binary.Write(writer, binary.LittleEndian, reply)
 	device.net.bind.Send(writer.Bytes(), initiatingElem.endpoint)
-	if err != nil {
-		device.log.Error.Println("Failed to send cookie reply:", err)
-	}
-	return err
+	return nil
 }
 
 func (peer *Peer) keepKeyFreshSending() {
@@ -231,7 +229,7 @@ func (peer *Peer) keepKeyFreshSending() {
 		return
 	}
 	nonce := atomic.LoadUint64(&keypair.sendNonce)
-	if nonce > RekeyAfterMessages || (keypair.isInitiator && time.Now().Sub(keypair.created) > RekeyAfterTime) {
+	if nonce > RekeyAfterMessages || (keypair.isInitiator && time.Since(keypair.created) > RekeyAfterTime) {
 		peer.SendHandshakeInitiation(false)
 	}
 }
@@ -389,7 +387,7 @@ func (peer *Peer) RoutineNonce() {
 
 				keypair = peer.keypairs.Current()
 				if keypair != nil && keypair.sendNonce < RejectAfterMessages {
-					if time.Now().Sub(keypair.created) < RejectAfterTime {
+					if time.Since(keypair.created) < RejectAfterTime {
 						break
 					}
 				}
@@ -448,6 +446,21 @@ func (peer *Peer) RoutineNonce() {
 			addToOutboundAndEncryptionQueues(peer.queue.outbound, device.queue.encryption, elem)
 		}
 	}
+}
+
+func calculatePaddingSize(packetSize, mtu int) int {
+	lastUnit := packetSize
+	if mtu == 0 {
+		return ((lastUnit + PaddingMultiple - 1) & ^(PaddingMultiple - 1)) - lastUnit
+	}
+	if lastUnit > mtu {
+		lastUnit %= mtu
+	}
+	paddedSize := ((lastUnit + PaddingMultiple - 1) & ^(PaddingMultiple - 1))
+	if paddedSize > mtu {
+		paddedSize = mtu
+	}
+	return paddedSize - lastUnit
 }
 
 /* Encrypts the elements in the queue
@@ -516,13 +529,8 @@ func (device *Device) RoutineEncryption() {
 
 			// pad content to multiple of 16
 
-			mtu := int(atomic.LoadInt32(&device.tun.mtu))
-			lastUnit := len(elem.packet) % mtu
-			paddedSize := (lastUnit + PaddingMultiple - 1) & ^(PaddingMultiple - 1)
-			if paddedSize > mtu {
-				paddedSize = mtu
-			}
-			for i := len(elem.packet); i < paddedSize; i++ {
+			paddingSize := calculatePaddingSize(len(elem.packet), int(atomic.LoadInt32(&device.tun.mtu)))
+			for i := 0; i < paddingSize; i++ {
 				elem.packet = append(elem.packet, 0)
 			}
 
@@ -599,19 +607,17 @@ func (peer *Peer) RoutineSequentialSender() {
 
 			// send message and return buffer to pool
 
-			length := uint64(len(elem.packet))
 			err := peer.SendBuffer(elem.packet)
+			if len(elem.packet) != MessageKeepaliveSize {
+				peer.timersDataSent()
+			}
 			device.PutMessageBuffer(elem.buffer)
 			device.PutOutboundElement(elem)
 			if err != nil {
 				logError.Println(peer, "- Failed to send data packet", err)
 				continue
 			}
-			atomic.AddUint64(&peer.stats.txBytes, length)
 
-			if len(elem.packet) != MessageKeepaliveSize {
-				peer.timersDataSent()
-			}
 			peer.keepKeyFreshSending()
 		}
 	}

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -9,9 +9,10 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/subtle"
+	"hash"
+
 	"golang.org/x/crypto/blake2s"
 	"golang.org/x/crypto/curve25519"
-	"hash"
 )
 
 /* KDF related functions.
@@ -41,7 +42,6 @@ func HMAC2(sum *[blake2s.Size]byte, key, in0, in1 []byte) {
 func KDF1(t0 *[blake2s.Size]byte, key, input []byte) {
 	HMAC1(t0, key, input)
 	HMAC1(t0, t0[:], []byte{0x1})
-	return
 }
 
 func KDF2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
@@ -50,7 +50,6 @@ func KDF2(t0, t1 *[blake2s.Size]byte, key, input []byte) {
 	HMAC1(t0, prk[:], []byte{0x1})
 	HMAC2(t1, prk[:], t0[:], []byte{0x2})
 	setZero(prk[:])
-	return
 }
 
 func KDF3(t0, t1, t2 *[blake2s.Size]byte, key, input []byte) {
@@ -60,7 +59,6 @@ func KDF3(t0, t1, t2 *[blake2s.Size]byte, key, input []byte) {
 	HMAC2(t1, prk[:], t0[:], []byte{0x2})
 	HMAC2(t2, prk[:], t1[:], []byte{0x3})
 	setZero(prk[:])
-	return
 }
 
 func isZero(val []byte) bool {

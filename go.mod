@@ -1,8 +1,10 @@
 module golang.zx2c4.com/wireguard
 
+go 1.13
+
 require (
-	github.com/Microsoft/go-winio v0.4.11
-	golang.org/x/crypto v0.0.0-20190228161510-8dd112bcdc25
-	golang.org/x/net v0.0.0-20190301231341-16b79f2e4e95
-	golang.org/x/sys v0.0.0-20190302025703-b6889370fb10
+	golang.org/x/crypto v0.0.0-20200429183012-4b2356b1ed79
+	golang.org/x/net v0.0.0-20200501053045-e0ff5e5a1de5
+	golang.org/x/sys v0.0.0-20200501145240-bc7a7d42d5c3
+	golang.org/x/text v0.3.2
 )

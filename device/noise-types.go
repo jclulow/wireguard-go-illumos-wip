@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -47,6 +48,15 @@ func (key NoisePrivateKey) Equals(tar NoisePrivateKey) bool {
 
 func (key *NoisePrivateKey) FromHex(src string) (err error) {
 	err = loadExactHex(key[:], src)
+	key.clamp()
+	return
+}
+
+func (key *NoisePrivateKey) FromMaybeZeroHex(src string) (err error) {
+	err = loadExactHex(key[:], src)
+	if key.IsZero() {
+		return
+	}
 	key.clamp()
 	return
 }

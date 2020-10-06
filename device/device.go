@@ -1,22 +1,22 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
 
 import (
-	"golang.zx2c4.com/wireguard/ratelimiter"
-	"golang.zx2c4.com/wireguard/tun"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
-)
 
-const (
-	DeviceRoutineNumberPerCPU     = 3
-	DeviceRoutineNumberAdditional = 2
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
+	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/ratelimiter"
+	"golang.zx2c4.com/wireguard/rwcancel"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 type Device struct {
@@ -38,9 +38,10 @@ type Device struct {
 		starting sync.WaitGroup
 		stopping sync.WaitGroup
 		sync.RWMutex
-		bind   Bind   // bind interface
-		port   uint16 // listening port
-		fwmark uint32 // mark value (0 = disabled)
+		bind          conn.Bind // bind interface
+		netlinkCancel *rwcancel.RWCancel
+		port          uint16 // listening port
+		fwmark        uint32 // mark value (0 = disabled)
 	}
 
 	staticIdentity struct {
@@ -85,7 +86,7 @@ type Device struct {
 	}
 
 	tun struct {
-		device tun.TUNDevice
+		device tun.Device
 		mtu    int32
 	}
 }
@@ -132,6 +133,7 @@ func deviceUpdateState(device *Device) {
 	switch newIsUp {
 	case true:
 		if err := device.BindUpdate(); err != nil {
+			device.log.Error.Printf("Unable to update bind: %v\n", err)
 			device.isUp.Set(false)
 			break
 		}
@@ -199,18 +201,22 @@ func (device *Device) IsUnderLoad() bool {
 }
 
 func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
-
 	// lock required resources
 
 	device.staticIdentity.Lock()
 	defer device.staticIdentity.Unlock()
 
+	if sk.Equals(device.staticIdentity.privateKey) {
+		return nil
+	}
+
 	device.peers.Lock()
 	defer device.peers.Unlock()
 
+	lockedPeers := make([]*Peer, 0, len(device.peers.keyMap))
 	for _, peer := range device.peers.keyMap {
 		peer.handshake.mutex.RLock()
-		defer peer.handshake.mutex.RUnlock()
+		lockedPeers = append(lockedPeers, peer)
 	}
 
 	// remove peers with matching public keys
@@ -230,27 +236,24 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 
 	// do static-static DH pre-computations
 
-	rmKey := device.staticIdentity.privateKey.IsZero()
-
-	for key, peer := range device.peers.keyMap {
-
+	expiredPeers := make([]*Peer, 0, len(device.peers.keyMap))
+	for _, peer := range device.peers.keyMap {
 		handshake := &peer.handshake
+		handshake.precomputedStaticStatic = device.staticIdentity.privateKey.sharedSecret(handshake.remoteStatic)
+		expiredPeers = append(expiredPeers, peer)
+	}
 
-		if rmKey {
-			handshake.precomputedStaticStatic = [NoisePublicKeySize]byte{}
-		} else {
-			handshake.precomputedStaticStatic = device.staticIdentity.privateKey.sharedSecret(handshake.remoteStatic)
-		}
-
-		if isZero(handshake.precomputedStaticStatic[:]) {
-			unsafeRemovePeer(device, peer, key)
-		}
+	for _, peer := range lockedPeers {
+		peer.handshake.mutex.RUnlock()
+	}
+	for _, peer := range expiredPeers {
+		peer.ExpireCurrentKeypairs()
 	}
 
 	return nil
 }
 
-func NewDevice(tunDevice tun.TUNDevice, logger *Logger) *Device {
+func NewDevice(tunDevice tun.Device, logger *Logger) *Device {
 	device := new(Device)
 
 	device.isUp.Set(false)
@@ -296,14 +299,16 @@ func NewDevice(tunDevice tun.TUNDevice, logger *Logger) *Device {
 	cpus := runtime.NumCPU()
 	device.state.starting.Wait()
 	device.state.stopping.Wait()
-	device.state.stopping.Add(DeviceRoutineNumberPerCPU*cpus + DeviceRoutineNumberAdditional)
-	device.state.starting.Add(DeviceRoutineNumberPerCPU*cpus + DeviceRoutineNumberAdditional)
 	for i := 0; i < cpus; i += 1 {
+		device.state.starting.Add(3)
+		device.state.stopping.Add(3)
 		go device.RoutineEncryption()
 		go device.RoutineDecryption()
 		go device.RoutineHandshake()
 	}
 
+	device.state.starting.Add(2)
+	device.state.stopping.Add(2)
 	go device.RoutineReadFromTUN()
 	go device.RoutineTUNEventReader()
 
@@ -322,7 +327,6 @@ func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
 func (device *Device) RemovePeer(key NoisePublicKey) {
 	device.peers.Lock()
 	defer device.peers.Unlock()
-
 	// stop peer and remove from routing
 
 	peer, ok := device.peers.keyMap[key]
@@ -379,10 +383,10 @@ func (device *Device) Close() {
 	device.isUp.Set(false)
 
 	close(device.signals.stop)
+	device.state.stopping.Wait()
 
 	device.RemoveAllPeers()
 
-	device.state.stopping.Wait()
 	device.FlushPacketQueues()
 
 	device.rate.limiter.Close()
@@ -393,4 +397,151 @@ func (device *Device) Close() {
 
 func (device *Device) Wait() chan struct{} {
 	return device.signals.stop
+}
+
+func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
+	if device.isClosed.Get() {
+		return
+	}
+
+	device.peers.RLock()
+	for _, peer := range device.peers.keyMap {
+		peer.keypairs.RLock()
+		sendKeepalive := peer.keypairs.current != nil && !peer.keypairs.current.created.Add(RejectAfterTime).Before(time.Now())
+		peer.keypairs.RUnlock()
+		if sendKeepalive {
+			peer.SendKeepalive()
+		}
+	}
+	device.peers.RUnlock()
+}
+
+func unsafeCloseBind(device *Device) error {
+	var err error
+	netc := &device.net
+	if netc.netlinkCancel != nil {
+		netc.netlinkCancel.Cancel()
+	}
+	if netc.bind != nil {
+		err = netc.bind.Close()
+		netc.bind = nil
+	}
+	netc.stopping.Wait()
+	return err
+}
+
+func (device *Device) Bind() conn.Bind {
+	device.net.Lock()
+	defer device.net.Unlock()
+	return device.net.bind
+}
+
+func (device *Device) BindSetMark(mark uint32) error {
+
+	device.net.Lock()
+	defer device.net.Unlock()
+
+	// check if modified
+
+	if device.net.fwmark == mark {
+		return nil
+	}
+
+	// update fwmark on existing bind
+
+	device.net.fwmark = mark
+	if device.isUp.Get() && device.net.bind != nil {
+		if err := device.net.bind.SetMark(mark); err != nil {
+			return err
+		}
+	}
+
+	// clear cached source addresses
+
+	device.peers.RLock()
+	for _, peer := range device.peers.keyMap {
+		peer.Lock()
+		defer peer.Unlock()
+		if peer.endpoint != nil {
+			peer.endpoint.ClearSrc()
+		}
+	}
+	device.peers.RUnlock()
+
+	return nil
+}
+
+func (device *Device) BindUpdate() error {
+
+	device.net.Lock()
+	defer device.net.Unlock()
+
+	// close existing sockets
+
+	if err := unsafeCloseBind(device); err != nil {
+		return err
+	}
+
+	// open new sockets
+
+	if device.isUp.Get() {
+
+		// bind to new port
+
+		var err error
+		netc := &device.net
+		netc.bind, netc.port, err = conn.CreateBind(netc.port)
+		if err != nil {
+			netc.bind = nil
+			netc.port = 0
+			return err
+		}
+		netc.netlinkCancel, err = device.startRouteListener(netc.bind)
+		if err != nil {
+			netc.bind.Close()
+			netc.bind = nil
+			netc.port = 0
+			return err
+		}
+
+		// set fwmark
+
+		if netc.fwmark != 0 {
+			err = netc.bind.SetMark(netc.fwmark)
+			if err != nil {
+				return err
+			}
+		}
+
+		// clear cached source addresses
+
+		device.peers.RLock()
+		for _, peer := range device.peers.keyMap {
+			peer.Lock()
+			defer peer.Unlock()
+			if peer.endpoint != nil {
+				peer.endpoint.ClearSrc()
+			}
+		}
+		device.peers.RUnlock()
+
+		// start receiving routines
+
+		device.net.starting.Add(2)
+		device.net.stopping.Add(2)
+		go device.RoutineReceiveIncoming(ipv4.Version, netc.bind)
+		go device.RoutineReceiveIncoming(ipv6.Version, netc.bind)
+		device.net.starting.Wait()
+
+		device.log.Debug.Println("UDP bind has been updated")
+	}
+
+	return nil
+}
+
+func (device *Device) BindClose() error {
+	device.net.Lock()
+	err := unsafeCloseBind(device)
+	device.net.Unlock()
+	return err
 }

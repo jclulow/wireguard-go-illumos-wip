@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
-package device
+package conn
 
 import (
 	"encoding/binary"
-	"golang.org/x/sys/windows"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -16,13 +17,13 @@ const (
 	sockoptIPV6_UNICAST_IF = 31
 )
 
-func (device *Device) BindSocketToInterface4(interfaceIndex uint32) error {
+func (bind *nativeBind) BindSocketToInterface4(interfaceIndex uint32, blackhole bool) error {
 	/* MSDN says for IPv4 this needs to be in net byte order, so that it's like an IP address with leading zeros. */
 	bytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(bytes, interfaceIndex)
 	interfaceIndex = *(*uint32)(unsafe.Pointer(&bytes[0]))
 
-	sysconn, err := device.net.bind.(*nativeBind).ipv4.SyscallConn()
+	sysconn, err := bind.ipv4.SyscallConn()
 	if err != nil {
 		return err
 	}
@@ -35,11 +36,12 @@ func (device *Device) BindSocketToInterface4(interfaceIndex uint32) error {
 	if err != nil {
 		return err
 	}
+	bind.blackhole4 = blackhole
 	return nil
 }
 
-func (device *Device) BindSocketToInterface6(interfaceIndex uint32) error {
-	sysconn, err := device.net.bind.(*nativeBind).ipv6.SyscallConn()
+func (bind *nativeBind) BindSocketToInterface6(interfaceIndex uint32, blackhole bool) error {
+	sysconn, err := bind.ipv6.SyscallConn()
 	if err != nil {
 		return err
 	}
@@ -52,5 +54,6 @@ func (device *Device) BindSocketToInterface6(interfaceIndex uint32) error {
 	if err != nil {
 		return err
 	}
+	bind.blackhole6 = blackhole
 	return nil
 }

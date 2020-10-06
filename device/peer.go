@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -10,7 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.zx2c4.com/wireguard/conn"
 )
 
 const (
@@ -23,10 +26,14 @@ type Peer struct {
 	keypairs                    Keypairs
 	handshake                   Handshake
 	device                      *Device
-	endpoint                    Endpoint
+	endpoint                    conn.Endpoint
 	persistentKeepaliveInterval uint16
 
-	// This must be 64-bit aligned, so make sure the above members come out to even alignment and pad accordingly
+	// These fields are accessed with atomic operations, which must be
+	// 64-bit aligned even on 32-bit platforms. Go guarantees that an
+	// allocated struct will be 64-bit aligned. So we place
+	// atomically-accessed fields up front, so that they can share in
+	// this alignment before smaller fields throw it off.
 	stats struct {
 		txBytes           uint64 // bytes send to peer (endpoint)
 		rxBytes           uint64 // bytes received from peer
@@ -67,7 +74,6 @@ type Peer struct {
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
-
 	if device.isClosed.Get() {
 		return nil, errors.New("device closed")
 	}
@@ -102,19 +108,22 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	if ok {
 		return nil, errors.New("adding existing peer")
 	}
-	device.peers.keyMap[pk] = peer
 
 	// pre-compute DH
 
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
-	handshake.remoteStatic = pk
 	handshake.precomputedStaticStatic = device.staticIdentity.privateKey.sharedSecret(pk)
+	handshake.remoteStatic = pk
 	handshake.mutex.Unlock()
 
 	// reset endpoint
 
 	peer.endpoint = nil
+
+	// add
+
+	device.peers.keyMap[pk] = peer
 
 	// start peer
 
@@ -140,7 +149,11 @@ func (peer *Peer) SendBuffer(buffer []byte) error {
 		return errors.New("no known endpoint for peer")
 	}
 
-	return peer.device.net.bind.Send(buffer, peer.endpoint)
+	err := peer.device.net.bind.Send(buffer, peer.endpoint)
+	if err == nil {
+		atomic.AddUint64(&peer.stats.txBytes, uint64(len(buffer)))
+	}
+	return err
 }
 
 func (peer *Peer) String() string {
@@ -210,10 +223,10 @@ func (peer *Peer) ZeroAndFlushAll() {
 	keypairs.Lock()
 	device.DeleteKeypair(keypairs.previous)
 	device.DeleteKeypair(keypairs.current)
-	device.DeleteKeypair(keypairs.next)
+	device.DeleteKeypair(keypairs.loadNext())
 	keypairs.previous = nil
 	keypairs.current = nil
-	keypairs.next = nil
+	keypairs.storeNext(nil)
 	keypairs.Unlock()
 
 	// clear handshake state
@@ -225,6 +238,25 @@ func (peer *Peer) ZeroAndFlushAll() {
 	handshake.mutex.Unlock()
 
 	peer.FlushNonceQueue()
+}
+
+func (peer *Peer) ExpireCurrentKeypairs() {
+	handshake := &peer.handshake
+	handshake.mutex.Lock()
+	peer.device.indexTable.Delete(handshake.localIndex)
+	handshake.Clear()
+	handshake.mutex.Unlock()
+	peer.handshake.lastSentHandshake = time.Now().Add(-(RekeyTimeout + time.Second))
+
+	keypairs := &peer.keypairs
+	keypairs.Lock()
+	if keypairs.current != nil {
+		keypairs.current.sendNonce = RejectAfterMessages
+	}
+	if keypairs.next != nil {
+		keypairs.loadNext().sendNonce = RejectAfterMessages
+	}
+	keypairs.Unlock()
 }
 
 func (peer *Peer) Stop() {
@@ -260,7 +292,7 @@ func (peer *Peer) Stop() {
 
 var RoamingDisabled bool
 
-func (peer *Peer) SetEndpointFromPacket(endpoint Endpoint) {
+func (peer *Peer) SetEndpointFromPacket(endpoint conn.Endpoint) {
 	if RoamingDisabled {
 		return
 	}

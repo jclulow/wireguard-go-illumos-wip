@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
 
 import (
-	"golang.zx2c4.com/wireguard/tun"
 	"sync/atomic"
+
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 const DefaultMTU = 1420
@@ -22,7 +23,7 @@ func (device *Device) RoutineTUNEventReader() {
 	device.state.starting.Done()
 
 	for event := range device.tun.device.Events() {
-		if event&tun.TUNEventMTUUpdate != 0 {
+		if event&tun.EventMTUUpdate != 0 {
 			mtu, err := device.tun.device.MTU()
 			old := atomic.LoadInt32(&device.tun.mtu)
 			if err != nil {
@@ -37,13 +38,13 @@ func (device *Device) RoutineTUNEventReader() {
 			}
 		}
 
-		if event&tun.TUNEventUp != 0 && !setUp {
+		if event&tun.EventUp != 0 && !setUp {
 			logInfo.Println("Interface set up")
 			setUp = true
 			device.Up()
 		}
 
-		if event&tun.TUNEventDown != 0 && setUp {
+		if event&tun.EventDown != 0 && setUp {
 			logInfo.Println("Interface set down")
 			setUp = false
 			device.Down()

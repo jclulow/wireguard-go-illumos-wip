@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -8,10 +8,11 @@ package device
 import (
 	"crypto/hmac"
 	"crypto/rand"
-	"golang.org/x/crypto/blake2s"
-	"golang.org/x/crypto/chacha20poly1305"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/blake2s"
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 type CookieChecker struct {
@@ -86,7 +87,7 @@ func (st *CookieChecker) CheckMAC2(msg []byte, src []byte) bool {
 	st.RLock()
 	defer st.RUnlock()
 
-	if time.Now().Sub(st.mac2.secretSet) > CookieRefreshTime {
+	if time.Since(st.mac2.secretSet) > CookieRefreshTime {
 		return false
 	}
 
@@ -123,7 +124,7 @@ func (st *CookieChecker) CreateReply(
 
 	// refresh cookie secret
 
-	if time.Now().Sub(st.mac2.secretSet) > CookieRefreshTime {
+	if time.Since(st.mac2.secretSet) > CookieRefreshTime {
 		st.RUnlock()
 		st.Lock()
 		_, err := rand.Read(st.mac2.secret[:])
@@ -238,7 +239,7 @@ func (st *CookieGenerator) AddMacs(msg []byte) {
 
 	// set mac2
 
-	if time.Now().Sub(st.mac2.cookieSet) > CookieRefreshTime {
+	if time.Since(st.mac2.cookieSet) > CookieRefreshTime {
 		return
 	}
 

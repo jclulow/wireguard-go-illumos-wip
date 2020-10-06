@@ -2,21 +2,22 @@
 
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package main
 
 import (
 	"fmt"
-	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/ipc"
-	"golang.zx2c4.com/wireguard/tun"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
 	"syscall"
+
+	"golang.zx2c4.com/wireguard/device"
+	"golang.zx2c4.com/wireguard/ipc"
+	"golang.zx2c4.com/wireguard/tun"
 )
 
 const (
@@ -36,44 +37,20 @@ func printUsage() {
 }
 
 func warning() {
-	if os.Getenv(ENV_WG_PROCESS_FOREGROUND) == "1" {
+	if runtime.GOOS != "linux" || os.Getenv(ENV_WG_PROCESS_FOREGROUND) == "1" {
 		return
 	}
 
-	shouldQuit := false
-
-	fmt.Fprintln(os.Stderr, "WARNING WARNING WARNING WARNING WARNING WARNING WARNING")
-	fmt.Fprintln(os.Stderr, "W                                                     G")
-	fmt.Fprintln(os.Stderr, "W   This is alpha software. It will very likely not   G")
-	fmt.Fprintln(os.Stderr, "W   do what it is supposed to do, and things may go   G")
-	fmt.Fprintln(os.Stderr, "W   horribly wrong. You have been warned. Proceed     G")
-	fmt.Fprintln(os.Stderr, "W   at your own risk.                                 G")
-	if runtime.GOOS == "linux" {
-		shouldQuit = os.Getenv("WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD") != "1"
-
-		fmt.Fprintln(os.Stderr, "W                                                     G")
-		fmt.Fprintln(os.Stderr, "W   Furthermore, you are running this software on a   G")
-		fmt.Fprintln(os.Stderr, "W   Linux kernel, which is probably unnecessary and   G")
-		fmt.Fprintln(os.Stderr, "W   foolish. This is because the Linux kernel has     G")
-		fmt.Fprintln(os.Stderr, "W   built-in first class support for WireGuard, and   G")
-		fmt.Fprintln(os.Stderr, "W   this support is much more refined than this       G")
-		fmt.Fprintln(os.Stderr, "W   program. For more information on installing the   G")
-		fmt.Fprintln(os.Stderr, "W   kernel module, please visit:                      G")
-		fmt.Fprintln(os.Stderr, "W           https://www.wireguard.com/install         G")
-		if shouldQuit {
-			fmt.Fprintln(os.Stderr, "W                                                     G")
-			fmt.Fprintln(os.Stderr, "W   If you still want to use this program, against    G")
-			fmt.Fprintln(os.Stderr, "W   the sage advice here, please first export this    G")
-			fmt.Fprintln(os.Stderr, "W   environment variable:                             G")
-			fmt.Fprintln(os.Stderr, "W   WG_I_PREFER_BUGGY_USERSPACE_TO_POLISHED_KMOD=1    G")
-		}
-	}
-	fmt.Fprintln(os.Stderr, "W                                                     G")
-	fmt.Fprintln(os.Stderr, "WARNING WARNING WARNING WARNING WARNING WARNING WARNING")
-
-	if shouldQuit {
-		os.Exit(1)
-	}
+	fmt.Fprintln(os.Stderr, "┌───────────────────────────────────────────────────┐")
+	fmt.Fprintln(os.Stderr, "│                                                   │")
+	fmt.Fprintln(os.Stderr, "│   Running this software on Linux is unnecessary,  │")
+	fmt.Fprintln(os.Stderr, "│   because the Linux kernel has built-in first     │")
+	fmt.Fprintln(os.Stderr, "│   class support for WireGuard, which will be      │")
+	fmt.Fprintln(os.Stderr, "│   faster, slicker, and better integrated. For     │")
+	fmt.Fprintln(os.Stderr, "│   information on installing the kernel module,    │")
+	fmt.Fprintln(os.Stderr, "│   please visit: <https://wireguard.com/install>.  │")
+	fmt.Fprintln(os.Stderr, "│                                                   │")
+	fmt.Fprintln(os.Stderr, "└───────────────────────────────────────────────────┘")
 }
 
 func main() {
@@ -83,8 +60,6 @@ func main() {
 	}
 
 	warning()
-
-	// parse arguments
 
 	var foreground bool
 	var interfaceName string
@@ -134,7 +109,7 @@ func main() {
 
 	// open TUN device (or use supplied fd)
 
-	tun, err := func() (tun.TUNDevice, error) {
+	tun, err := func() (tun.Device, error) {
 		tunFdStr := os.Getenv(ENV_WG_TUN_FD)
 		if tunFdStr == "" {
 			return tun.CreateTUN(interfaceName, device.DefaultMTU)

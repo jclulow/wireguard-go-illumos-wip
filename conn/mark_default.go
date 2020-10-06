@@ -2,10 +2,10 @@
 
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
-package device
+package conn
 
 func (bind *nativeBind) SetMark(mark uint32) error {
 	return nil

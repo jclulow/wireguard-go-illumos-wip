@@ -1,13 +1,12 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2020 WireGuard LLC. All Rights Reserved.
  */
 
 package setupapi
 
 import (
 	"strings"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -28,6 +27,7 @@ const (
 // Define maximum string length constants
 //
 const (
+	ANYSIZE_ARRAY               = 1
 	LINE_LEN                    = 256  // Windows 9x-compatible maximum for displayable strings coming from a device INF.
 	MAX_INF_STRING_LENGTH       = 4096 // Actual maximum size of an INF string (including string substitutions).
 	MAX_INF_SECTION_NAME_LENGTH = 255  // For Windows 9x compatibility, INF section names should be constrained to 32 characters.
@@ -57,20 +57,20 @@ type DevInfoData struct {
 	_         uintptr
 }
 
-// DevInfoListDetailData is a structure for detailed information on a device information set (used for SetupDiGetDeviceInfoListDetail which supercedes the functionality of SetupDiGetDeviceInfoListClass).
+// DevInfoListDetailData is a structure for detailed information on a device information set (used for SetupDiGetDeviceInfoListDetail which supersedes the functionality of SetupDiGetDeviceInfoListClass).
 type DevInfoListDetailData struct {
-	size                uint32
+	size                uint32 // Warning: unsafe.Sizeof(DevInfoListDetailData) > sizeof(SP_DEVINFO_LIST_DETAIL_DATA) when GOARCH == 386 => use sizeofDevInfoListDetailData const.
 	ClassGUID           windows.GUID
 	RemoteMachineHandle windows.Handle
 	remoteMachineName   [SP_MAX_MACHINENAME_LENGTH]uint16
 }
 
-func (data *DevInfoListDetailData) GetRemoteMachineName() string {
+func (data *DevInfoListDetailData) RemoteMachineName() string {
 	return windows.UTF16ToString(data.remoteMachineName[:])
 }
 
 func (data *DevInfoListDetailData) SetRemoteMachineName(remoteMachineName string) error {
-	str, err := syscall.UTF16FromString(remoteMachineName)
+	str, err := windows.UTF16FromString(remoteMachineName)
 	if err != nil {
 		return err
 	}
@@ -137,12 +137,12 @@ type DevInstallParams struct {
 	driverPath               [windows.MAX_PATH]uint16
 }
 
-func (params *DevInstallParams) GetDriverPath() string {
+func (params *DevInstallParams) DriverPath() string {
 	return windows.UTF16ToString(params.driverPath[:])
 }
 
 func (params *DevInstallParams) SetDriverPath(driverPath string) error {
-	str, err := syscall.UTF16FromString(driverPath)
+	str, err := windows.UTF16FromString(driverPath)
 	if err != nil {
 		return err
 	}
@@ -267,14 +267,33 @@ func MakeClassInstallHeader(installFunction DI_FUNCTION) *ClassInstallHeader {
 	return hdr
 }
 
+// DICS_STATE specifies values indicating a change in a device's state
+type DICS_STATE uint32
+
+const (
+	DICS_ENABLE     DICS_STATE = 0x00000001 // The device is being enabled.
+	DICS_DISABLE    DICS_STATE = 0x00000002 // The device is being disabled.
+	DICS_PROPCHANGE DICS_STATE = 0x00000003 // The properties of the device have changed.
+	DICS_START      DICS_STATE = 0x00000004 // The device is being started (if the request is for the currently active hardware profile).
+	DICS_STOP       DICS_STATE = 0x00000005 // The device is being stopped. The driver stack will be unloaded and the CSCONFIGFLAG_DO_NOT_START flag will be set for the device.
+)
+
 // DICS_FLAG specifies the scope of a device property change
 type DICS_FLAG uint32
 
 const (
 	DICS_FLAG_GLOBAL         DICS_FLAG = 0x00000001 // make change in all hardware profiles
 	DICS_FLAG_CONFIGSPECIFIC DICS_FLAG = 0x00000002 // make change in specified profile only
-	DICS_FLAG_CONFIGGENERAL  DICS_FLAG = 0x00000004 // 1 or more hardware profile-specific changes to follow
+	DICS_FLAG_CONFIGGENERAL  DICS_FLAG = 0x00000004 // 1 or more hardware profile-specific changes to follow (obsolete)
 )
+
+// PropChangeParams is a structure corresponding to a DIF_PROPERTYCHANGE install function.
+type PropChangeParams struct {
+	ClassInstallHeader ClassInstallHeader
+	StateChange        DICS_STATE
+	Scope              DICS_FLAG
+	HwProfile          uint32
+}
 
 // DI_REMOVEDEVICE specifies the scope of the device removal
 type DI_REMOVEDEVICE uint32
@@ -303,12 +322,12 @@ type DrvInfoData struct {
 	DriverVersion uint64
 }
 
-func (data *DrvInfoData) GetDescription() string {
+func (data *DrvInfoData) Description() string {
 	return windows.UTF16ToString(data.description[:])
 }
 
 func (data *DrvInfoData) SetDescription(description string) error {
-	str, err := syscall.UTF16FromString(description)
+	str, err := windows.UTF16FromString(description)
 	if err != nil {
 		return err
 	}
@@ -316,12 +335,12 @@ func (data *DrvInfoData) SetDescription(description string) error {
 	return nil
 }
 
-func (data *DrvInfoData) GetMfgName() string {
+func (data *DrvInfoData) MfgName() string {
 	return windows.UTF16ToString(data.mfgName[:])
 }
 
 func (data *DrvInfoData) SetMfgName(mfgName string) error {
-	str, err := syscall.UTF16FromString(mfgName)
+	str, err := windows.UTF16FromString(mfgName)
 	if err != nil {
 		return err
 	}
@@ -329,12 +348,12 @@ func (data *DrvInfoData) SetMfgName(mfgName string) error {
 	return nil
 }
 
-func (data *DrvInfoData) GetProviderName() string {
+func (data *DrvInfoData) ProviderName() string {
 	return windows.UTF16ToString(data.providerName[:])
 }
 
 func (data *DrvInfoData) SetProviderName(providerName string) error {
-	str, err := syscall.UTF16FromString(providerName)
+	str, err := windows.UTF16FromString(providerName)
 	if err != nil {
 		return err
 	}
@@ -370,7 +389,7 @@ func (data *DrvInfoData) IsNewer(driverDate windows.Filetime, driverVersion uint
 
 // DrvInfoDetailData is driver information details structure (provides detailed information about a particular driver information structure)
 type DrvInfoDetailData struct {
-	size            uint32 // On input, this must be exactly the sizeof(DrvInfoDetailData). On output, we set this member to the actual size of structure data.
+	size            uint32 // Warning: unsafe.Sizeof(DrvInfoDetailData) > sizeof(SP_DRVINFO_DETAIL_DATA) when GOARCH == 386 => use sizeofDrvInfoDetailData const.
 	InfDate         windows.Filetime
 	compatIDsOffset uint32
 	compatIDsLength uint32
@@ -378,22 +397,22 @@ type DrvInfoDetailData struct {
 	sectionName     [LINE_LEN]uint16
 	infFileName     [windows.MAX_PATH]uint16
 	drvDescription  [LINE_LEN]uint16
-	hardwareID      [1]uint16
+	hardwareID      [ANYSIZE_ARRAY]uint16
 }
 
-func (data *DrvInfoDetailData) GetSectionName() string {
+func (data *DrvInfoDetailData) SectionName() string {
 	return windows.UTF16ToString(data.sectionName[:])
 }
 
-func (data *DrvInfoDetailData) GetInfFileName() string {
+func (data *DrvInfoDetailData) InfFileName() string {
 	return windows.UTF16ToString(data.infFileName[:])
 }
 
-func (data *DrvInfoDetailData) GetDrvDescription() string {
+func (data *DrvInfoDetailData) DrvDescription() string {
 	return windows.UTF16ToString(data.drvDescription[:])
 }
 
-func (data *DrvInfoDetailData) GetHardwareID() string {
+func (data *DrvInfoDetailData) HardwareID() string {
 	if data.compatIDsOffset > 1 {
 		bufW := data.getBuf()
 		return windows.UTF16ToString(bufW[:wcslen(bufW)])
@@ -402,7 +421,7 @@ func (data *DrvInfoDetailData) GetHardwareID() string {
 	return ""
 }
 
-func (data *DrvInfoDetailData) GetCompatIDs() []string {
+func (data *DrvInfoDetailData) CompatIDs() []string {
 	a := make([]string, 0)
 
 	if data.compatIDsLength > 0 {
@@ -433,10 +452,10 @@ func (data *DrvInfoDetailData) getBuf() []uint16 {
 // IsCompatible method tests if given hardware ID matches the driver or is listed on the compatible ID list.
 func (data *DrvInfoDetailData) IsCompatible(hwid string) bool {
 	hwidLC := strings.ToLower(hwid)
-	if strings.ToLower(data.GetHardwareID()) == hwidLC {
+	if strings.ToLower(data.HardwareID()) == hwidLC {
 		return true
 	}
-	a := data.GetCompatIDs()
+	a := data.CompatIDs()
 	for i := range a {
 		if strings.ToLower(a[i]) == hwidLC {
 			return true
@@ -536,4 +555,14 @@ const (
 	SPDRP_BASE_CONTAINERID            SPDRP = 0x00000024 // Base ContainerID (R)
 
 	SPDRP_MAXIMUM_PROPERTY SPDRP = 0x00000025 // Upper bound on ordinals
+)
+
+const (
+	CR_SUCCESS      = 0x0
+	CR_BUFFER_SMALL = 0x1a
+)
+
+const (
+	CM_GET_DEVICE_INTERFACE_LIST_PRESENT     = 0 // only currently 'live' device interfaces
+	CM_GET_DEVICE_INTERFACE_LIST_ALL_DEVICES = 1 // all registered device interfaces, live or not
 )
