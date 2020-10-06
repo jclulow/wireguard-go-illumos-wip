@@ -234,7 +234,7 @@ To run with more logging you may set the environment variable `LOG_LEVEL=debug`.
 
 ### Linux
 
-This will run on Linux; however **YOU SHOULD NOT RUN THIS ON LINUX**. Instead use the kernel module; see the [installation page](https://www.wireguard.com/install/) for instructions.
+This will run on Linux; however you should instead use the kernel module, which is faster and better integrated into the OS. See the [installation page](https://www.wireguard.com/install/) for instructions.
 
 ### macOS
 
@@ -254,7 +254,7 @@ This will run on OpenBSD. It does not yet support sticky sockets. Fwmark is mapp
 
 ## Building
 
-This requires an installation of [go](https://golang.org) ≥ 1.12.
+This requires an installation of [go](https://golang.org) ≥ 1.13.
 
 ```
 $ git clone https://git.zx2c4.com/wireguard-go
@@ -264,7 +264,7 @@ $ make
 
 ## License
 
-    Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+    Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
     
     Permission is hereby granted, free of charge, to any person obtaining a copy of
     this software and associated documentation files (the "Software"), to deal in

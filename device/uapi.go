@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ipc"
 )
 
@@ -30,7 +32,7 @@ func (s IPCError) ErrorCode() int64 {
 	return s.int64
 }
 
-func (device *Device) IpcGetOperation(socket *bufio.Writer) *IPCError {
+func (device *Device) IpcGetOperation(socket *bufio.Writer) error {
 	lines := make([]string, 0, 100)
 	send := func(line string) {
 		lines = append(lines, line)
@@ -105,7 +107,7 @@ func (device *Device) IpcGetOperation(socket *bufio.Writer) *IPCError {
 	return nil
 }
 
-func (device *Device) IpcSetOperation(socket *bufio.Reader) *IPCError {
+func (device *Device) IpcSetOperation(socket *bufio.Reader) error {
 	scanner := bufio.NewScanner(socket)
 	logError := device.log.Error
 	logDebug := device.log.Debug
@@ -138,7 +140,7 @@ func (device *Device) IpcSetOperation(socket *bufio.Reader) *IPCError {
 			switch key {
 			case "private_key":
 				var sk NoisePrivateKey
-				err := sk.FromHex(value)
+				err := sk.FromMaybeZeroHex(value)
 				if err != nil {
 					logError.Println("Failed to set private_key:", err)
 					return &IPCError{ipc.IpcErrorInvalid}
@@ -306,7 +308,7 @@ func (device *Device) IpcSetOperation(socket *bufio.Reader) *IPCError {
 				err := func() error {
 					peer.Lock()
 					defer peer.Unlock()
-					endpoint, err := CreateEndpoint(value)
+					endpoint, err := conn.CreateEndpoint(value)
 					if err != nil {
 						return err
 					}
@@ -420,10 +422,20 @@ func (device *Device) IpcHandle(socket net.Conn) {
 
 	switch op {
 	case "set=1\n":
-		status = device.IpcSetOperation(buffered.Reader)
+		err = device.IpcSetOperation(buffered.Reader)
+		if err != nil && !errors.As(err, &status) {
+			// should never happen
+			device.log.Error.Println("Invalid UAPI error:", err)
+			status = &IPCError{1}
+		}
 
 	case "get=1\n":
-		status = device.IpcGetOperation(buffered.Writer)
+		err = device.IpcGetOperation(buffered.Writer)
+		if err != nil && !errors.As(err, &status) {
+			// should never happen
+			device.log.Error.Println("Invalid UAPI error:", err)
+			status = &IPCError{1}
+		}
 
 	default:
 		device.log.Error.Println("Invalid UAPI operation:", op)

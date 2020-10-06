@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2019 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -448,6 +448,21 @@ func (peer *Peer) RoutineNonce() {
 	}
 }
 
+func calculatePaddingSize(packetSize, mtu int) int {
+	lastUnit := packetSize
+	if mtu == 0 {
+		return ((lastUnit + PaddingMultiple - 1) & ^(PaddingMultiple - 1)) - lastUnit
+	}
+	if lastUnit > mtu {
+		lastUnit %= mtu
+	}
+	paddedSize := ((lastUnit + PaddingMultiple - 1) & ^(PaddingMultiple - 1))
+	if paddedSize > mtu {
+		paddedSize = mtu
+	}
+	return paddedSize - lastUnit
+}
+
 /* Encrypts the elements in the queue
  * and marks them for sequential consumption (by releasing the mutex)
  *
@@ -514,13 +529,8 @@ func (device *Device) RoutineEncryption() {
 
 			// pad content to multiple of 16
 
-			mtu := int(atomic.LoadInt32(&device.tun.mtu))
-			lastUnit := len(elem.packet) % mtu
-			paddedSize := (lastUnit + PaddingMultiple - 1) & ^(PaddingMultiple - 1)
-			if paddedSize > mtu {
-				paddedSize = mtu
-			}
-			for i := len(elem.packet); i < paddedSize; i++ {
+			paddingSize := calculatePaddingSize(len(elem.packet), int(atomic.LoadInt32(&device.tun.mtu)))
+			for i := 0; i < paddingSize; i++ {
 				elem.packet = append(elem.packet, 0)
 			}
 
